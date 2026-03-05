@@ -62,6 +62,13 @@ pub fn socket_path() -> PathBuf {
         .join("pike.sock")
 }
 
+pub fn notify_daemon_recheck() {
+    try_daemon_request(&DaemonRequest::Check {
+        notify: false,
+        notify_always: false,
+    });
+}
+
 pub fn is_daemon_running() -> bool {
     UnixStream::connect(socket_path()).is_ok()
 }

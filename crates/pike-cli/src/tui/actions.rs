@@ -10,6 +10,8 @@ use unicode_width::UnicodeWidthStr;
 use pike_core::manager::PackageManager;
 use pike_core::package::SourceType;
 
+use crate::ipc::notify_daemon_recheck;
+
 use super::app::{Action, App};
 use super::async_ops::{AsyncResult, spawn_check_updates, spawn_list_repos, spawn_search};
 use super::types::AddRepoParams;
@@ -40,22 +42,27 @@ pub(super) async fn handle_action(
         Action::InstallPackage(pkg, source) => {
             install_package(terminal, app, manager, &pkg, source).await?;
             app.installed.loaded = false;
+            notify_daemon_recheck();
         }
         Action::RemovePackage(pkg, source) => {
             remove_package(terminal, app, manager, &pkg, source).await?;
             app.installed.loaded = false;
+            notify_daemon_recheck();
         }
         Action::UpdatePackage(pkg, source) => {
             update_package(terminal, manager, &pkg, source).await?;
             spawn_check_updates(app, tx, active_sources);
+            notify_daemon_recheck();
         }
         Action::UpdateAll(pkgs) => {
             update_all(terminal, manager, &pkgs).await?;
             spawn_check_updates(app, tx, active_sources);
+            notify_daemon_recheck();
         }
         Action::Autoremove => {
             autoremove(terminal, app, manager).await?;
             app.installed.loaded = false;
+            notify_daemon_recheck();
         }
         Action::RefreshRepos => {
             spawn_list_repos(app, tx, active_sources);

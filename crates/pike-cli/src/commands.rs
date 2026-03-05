@@ -9,7 +9,7 @@ use pike_core::util::truncate_str;
 use rust_i18n::t;
 
 use crate::RepoCommands;
-use crate::ipc::{self, DaemonRequest, DaemonResponse, try_daemon_request};
+use crate::ipc::{self, DaemonRequest, DaemonResponse, notify_daemon_recheck, try_daemon_request};
 
 const WAYBAR_MAX_PER_SOURCE: usize = 3;
 
@@ -78,6 +78,7 @@ pub async fn install(
     let src_name = manager.install(package, source_filter).await?;
     let msg = t!("cli.installed", pkg = package);
     eprintln!("  [{}] {msg}", src_name.cyan());
+    notify_daemon_recheck();
     Ok(())
 }
 
@@ -101,6 +102,7 @@ pub async fn remove(
         t!("cli.removed", pkg = package)
     };
     eprintln!("  [{}] {done_msg}", src_name.cyan());
+    notify_daemon_recheck();
     Ok(())
 }
 
@@ -120,6 +122,7 @@ pub async fn autoremove(manager: &PackageManager) -> anyhow::Result<()> {
         let done = t!("cli.cleanup-complete");
         eprintln!("  {}", done.green());
     }
+    notify_daemon_recheck();
     Ok(())
 }
 
@@ -129,6 +132,7 @@ pub async fn update(manager: &PackageManager, package: Option<&str>) -> anyhow::
             let msg = t!("cli.updating-pkg", pkg = pkg);
             eprintln!("  [{}] {msg}", "pike".cyan());
             manager.update_package(pkg).await?;
+            notify_daemon_recheck();
         }
         None => {
             let msg = t!("cli.updating-source");
@@ -146,6 +150,7 @@ pub async fn update(manager: &PackageManager, package: Option<&str>) -> anyhow::
                 let done = t!("cli.all-sources-updated");
                 eprintln!("  {}", done.green());
             }
+            notify_daemon_recheck();
         }
     }
     Ok(())
