@@ -1,0 +1,3 @@
+[workspace]
+resolver = "2"
+members = ["crates/pike-core", "crates/pike-cli"]

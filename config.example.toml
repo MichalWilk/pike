@@ -1,0 +1,23 @@
+# Pike configuration
+# All values shown below are defaults. Uncomment to override.
+
+[sources]
+# dnf = true
+# flatpak = true
+
+# Architecture filters per source.
+# Only packages matching these architectures are shown in search results.
+# Defaults are auto-detected from host architecture.
+# flatpak does not support arch filtering.
+[display.architectures]
+# Available: x86_64, aarch64, i686, noarch, armv7hl, ppc64le, s390x
+# dnf = ["x86_64", "noarch"]
+
+[logging]
+# file = true
+
+[daemon]
+# Check interval in seconds (minimum: 10)
+# interval = 600
+# Show desktop notifications when updates are found
+# notify = true
