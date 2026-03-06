@@ -311,12 +311,13 @@ pub fn validate_repo_input(
         ));
     }
 
-    if url.is_empty() {
-        return Ok(());
-    }
-
     match method {
         RepoMethod::Copr => {
+            if url.is_empty() {
+                return Err(PikeError::Validation(
+                    "Copr identifier is required (owner/project)".into(),
+                ));
+            }
             let parts: Vec<&str> = url.splitn(2, '/').collect();
             if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
                 return Err(PikeError::Validation(
@@ -344,6 +345,29 @@ pub fn validate_repo_input(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_repo_copr_empty_url_rejected() {
+        let result = validate_repo_input(RepoMethod::Copr, "", "", "");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_repo_rpm_empty_url_rejected() {
+        let result = validate_repo_input(RepoMethod::RpmPackage, "", "", "");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_repo_copr_valid() {
+        let result = validate_repo_input(RepoMethod::Copr, "", "", "owner/project");
+        assert!(result.is_ok());
+    }
 }
 
 async fn binary_exists(name: &str) -> bool {
