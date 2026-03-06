@@ -1,20 +1,37 @@
 # Pike
 
-Unified package manager for Linux -wraps **dnf** and **flatpak** into a single CLI. Built for tiling WM users (Hyprland / Sway) on Fedora.
+Unified package manager for Linux - wraps **dnf** and **flatpak** into a single CLI + interactive TUI. Built for tiling WM users (Hyprland / Sway) on Fedora.
+
+- Install, remove, search, and update across dnf and flatpak with one command
+- Background daemon with periodic update checks and desktop notifications
+- Interactive TUI with 6 tabs: Search, Installed, Updates, Repos, Settings, About
+- Waybar integration with push updates from daemon (no polling)
+- Unix socket IPC, SQLite update cache, XDG-compliant paths
 
 ![Pike TUI](assets/screenshot.png)
+
+## Why pike?
+
+- **vs topgrade** - topgrade is an updater only (runs `dnf upgrade` / `flatpak update`). No install/remove/search, no TUI, no daemon, no Waybar widget, no repo management. Pike is a full package manager.
+- **vs GNOME Software / KDE Discover** - GUI apps tied to their desktop environment. Not keyboard-driven, not designed for tiling WM workflows, and GNOME Software can't manage dnf repos.
+- **vs using dnf + flatpak separately** - no unified search, no single install command, no combined update count in Waybar, no shared daemon. Two notification sources, two sets of commands to remember.
+- **vs packagekit** - D-Bus abstraction layer with limited CLI. No TUI, no Waybar integration, no background daemon with push updates.
 
 ## Requirements
 
 Requires **dnf** and/or **flatpak** on the system (pre-installed on Fedora).
+
+> **Fedora Atomic / Silverblue:** Pike requires a mutable dnf system. Fedora Atomic desktops (Silverblue, Kinoite, Sericea, Onyx) are not currently supported - they use `rpm-ostree` instead of `dnf5`. Flatpak-only mode would work in theory, but is untested.
 
 ## Install
 
 ### From GitHub release
 
 ```bash
-curl -fsSL https://github.com/MichalWilk/pike/releases/latest/download/pike-linux-x86_64.tar.gz \
-  | sudo tar xz -C /usr/local/bin pike
+curl -fsSL https://github.com/MichalWilk/pike/releases/latest/download/pike-linux-x86_64.tar.gz -o /tmp/pike.tar.gz
+curl -fsSL https://github.com/MichalWilk/pike/releases/latest/download/pike-linux-x86_64.tar.gz.sha256 -o /tmp/pike.tar.gz.sha256
+sha256sum -c /tmp/pike.tar.gz.sha256
+sudo tar xzf /tmp/pike.tar.gz -C /usr/local/bin pike
 ```
 
 ### From source
@@ -89,6 +106,8 @@ pike daemon                        # run background daemon (periodic checks + no
 pike waybar                        # continuous waybar output (requires daemon)
 pike tui                           # interactive terminal UI
 ```
+
+**Source auto-detection:** when no `-S` flag is given, pike searches all enabled sources in parallel. If the package is found in exactly one source, that source is used. If found in multiple sources, pike returns an error asking you to specify with `-S dnf` or `-S flatpak`. There is no implicit priority between sources.
 
 Most commands have short aliases: `s` (search), `i` (install), `rm` (remove), `up` (update), `ar` (autoremove), `ck` (check), `ls` (list), `st` (status), `ui` (tui).
 
@@ -249,17 +268,31 @@ windowrulev2 = size 900 600, class:(pike-tui)
 
 ## Localization
 
-Pike supports internationalization via `rust-i18n`. All user-facing strings in the CLI and TUI are loaded from TOML locale files at compile time (zero runtime overhead).
+Pike uses `rust-i18n` for internationalization. All user-facing strings are loaded from TOML locale files at compile time.
 
-- Locale files: `crates/pike-cli/locales/`
-- Ships with: `en.toml` (English)
-- Locale detection: reads `LANG` / `LC_ALL` environment variables via `sys-locale`
-- Override: `LANG=de_DE.UTF-8 pike tui`
+Currently only English is included. To add a new language, copy `crates/pike-cli/locales/en.toml` to `<lang>.toml` (e.g. `pl.toml`) and translate the values. Locale is detected via `LANG` / `LC_ALL` environment variables. Override with `LANG=pl_PL.UTF-8 pike tui`.
 
-To add a new language, copy `en.toml` to `<lang>.toml` (e.g. `de.toml`) and translate the values.
+**Not translated** (by design): clap `--help` text, `pike-core` error messages (library crate, no i18n dependency), waybar JSON keys/classes (machine-readable).
 
-**Not translated** (by design): clap `--help` text, `pike-core` error messages (technical), waybar JSON keys/classes (machine-readable).
+## Roadmap
 
-## Support
+### Coming next
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/F1F11VG9MO)
+- **mise backend** - global runtime management (node, python, go) via `mise use -g`
+- **Source priority config** - per-package install preference (`[install.priority]` and `[install.prefer]` in config.toml), interactive prompt on first conflict with option to save choice
+
+### Considering
+
+- rpm-ostree / Fedora Atomic support
+- pipx backend
+- Homebrew backend
+- apt backend (non-Fedora distros)
+
+### Won't do
+
+- **Snap support** - systemd socket dependency conflicts with tiling WM setups, low Fedora adoption
+- **Per-project versioning via mise** - out of scope, use mise directly for .mise.toml workflows
+
+## License
+
+MIT

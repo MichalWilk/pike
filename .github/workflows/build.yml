@@ -43,10 +43,15 @@ jobs:
       - name: Package release archive
         run: tar czf pike-linux-x86_64.tar.gz -C target/release pike -C "$GITHUB_WORKSPACE" LICENSE
 
+      - name: Generate checksum
+        run: sha256sum pike-linux-x86_64.tar.gz > pike-linux-x86_64.tar.gz.sha256
+
       - uses: actions/upload-artifact@v4
         with:
           name: pike-linux-x86_64
-          path: pike-linux-x86_64.tar.gz
+          path: |
+            pike-linux-x86_64.tar.gz
+            pike-linux-x86_64.tar.gz.sha256
 
   release:
     name: Release
@@ -62,5 +67,7 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: pike-linux-x86_64.tar.gz
+          files: |
+            pike-linux-x86_64.tar.gz
+            pike-linux-x86_64.tar.gz.sha256
           generate_release_notes: true
