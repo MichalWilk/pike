@@ -5,6 +5,10 @@
 # dnf = true
 # flatpak = true
 
+[display]
+# Language: "auto" (detect from system), "en", or "pl"
+# language = "auto"
+
 # Architecture filters per source.
 # Only packages matching these architectures are shown in search results.
 # Defaults are auto-detected from host architecture.

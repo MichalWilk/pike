@@ -12,6 +12,7 @@ pub(crate) enum SettingsRow {
     SourcesReset,
     ArchToggle(SourceType, &'static str),
     ArchReset(SourceType),
+    LanguageCycle,
     LogToggle,
     DaemonStatus,
     DaemonInterval,

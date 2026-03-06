@@ -134,24 +134,36 @@ pub(super) fn render_context_bar(frame: &mut Frame, app: &App, area: Rect) {
                 return;
             }
             let shown = app.search_filtered_indices().len();
-            let noun = t!("tui.context.results");
-            format_count_line(&app.search.results.items, shown, |p| p.source, &noun)
+            format_count_line(
+                &app.search.results.items,
+                shown,
+                |p| p.source,
+                "tui.context.results",
+            )
         }
         Tab::Installed => {
             if app.installed.loading || app.installed.items.is_empty() {
                 return;
             }
             let shown = app.installed_filtered_indices().len();
-            let noun = t!("tui.context.packages");
-            format_count_line(&app.installed.items, shown, |p| p.source, &noun)
+            format_count_line(
+                &app.installed.items,
+                shown,
+                |p| p.source,
+                "tui.context.packages",
+            )
         }
         Tab::Updates => {
             if app.updates.loading || app.updates.items.is_empty() {
                 return;
             }
             let shown = app.updates_filtered_indices().len();
-            let noun = t!("tui.context.updates-available");
-            format_count_line(&app.updates.items, shown, |u| u.source, &noun)
+            format_count_line(
+                &app.updates.items,
+                shown,
+                |u| u.source,
+                "tui.context.updates-available",
+            )
         }
         Tab::Repos => match repos_context_line(app) {
             Some(line) => line,
@@ -248,7 +260,12 @@ fn repos_context_line(app: &App) -> Option<Line<'static>> {
         )
         .to_string()
     } else {
-        t!("tui.context.repos-total", total = total, enabled = enabled).to_string()
+        t!(
+            &crate::i18n::plural_key("tui.context.repos-total", total),
+            total = total,
+            enabled = enabled
+        )
+        .to_string()
     };
     Some(Line::from(Span::styled(
         text,

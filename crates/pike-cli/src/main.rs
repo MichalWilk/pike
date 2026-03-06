@@ -2,6 +2,7 @@ rust_i18n::i18n!("locales", fallback = "en");
 
 mod commands;
 mod daemon;
+mod i18n;
 mod ipc;
 mod tui;
 
@@ -175,9 +176,14 @@ pub(crate) enum RepoCommands {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let lang = sys_locale::get_locale().unwrap_or_else(|| String::from("en"));
-    rust_i18n::set_locale(lang.split('-').next().unwrap_or("en"));
     let config = Config::load()?;
+    let locale = if config.display.language == "auto" {
+        let lang = sys_locale::get_locale().unwrap_or_else(|| String::from("en"));
+        lang.split(['-', '_']).next().unwrap_or("en").to_string()
+    } else {
+        config.display.language.clone()
+    };
+    rust_i18n::set_locale(&locale);
     let is_tui = matches!(cli.command, Commands::Tui { .. });
     setup_tracing(cli.verbose, &config, is_tui)?;
     let icon_style = IconStyle::detect();

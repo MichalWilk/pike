@@ -270,7 +270,14 @@ windowrulev2 = size 900 600, class:(pike-tui)
 
 Pike uses `rust-i18n` for internationalization. All user-facing strings are loaded from TOML locale files at compile time.
 
-Currently only English is included. To add a new language, copy `crates/pike-cli/locales/en.toml` to `<lang>.toml` (e.g. `pl.toml`) and translate the values. Locale is detected via `LANG` / `LC_ALL` environment variables. Override with `LANG=pl_PL.UTF-8 pike tui`.
+Ships with English and Polish. Set the language in `config.toml` or cycle through options in the TUI Settings tab:
+
+```toml
+[display]
+language = "auto"  # "auto", "en", or "pl"
+```
+
+`"auto"` detects from `LANG` / `LC_ALL` environment variables. To add a new language, copy `crates/pike-cli/locales/en.toml` to `<lang>.toml` and translate the values.
 
 **Not translated** (by design): clap `--help` text, `pike-core` error messages (library crate, no i18n dependency), waybar JSON keys/classes (machine-readable).
 

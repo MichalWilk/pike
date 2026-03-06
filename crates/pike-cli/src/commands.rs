@@ -61,7 +61,10 @@ pub async fn search(
     }
 
     print_packages_table(&packages);
-    let msg = t!("cli.packages-found", count = packages.len());
+    let msg = t!(
+        &crate::i18n::plural_key("cli.packages-found", packages.len()),
+        count = packages.len()
+    );
     println!("\n  {msg}");
 
     Ok(())
@@ -223,7 +226,10 @@ pub async fn list(manager: &PackageManager, updates_only: bool, json: bool) -> a
     }
 
     print_packages_table(&packages);
-    let msg = t!("cli.packages-found", count = packages.len());
+    let msg = t!(
+        &crate::i18n::plural_key("cli.packages-found", packages.len()),
+        count = packages.len()
+    );
     println!("\n  {msg}");
 
     Ok(())
@@ -282,7 +288,7 @@ fn display_status(
     } else {
         let summary = format_update_counts(status);
         let msg = t!(
-            "cli.updates-status",
+            &crate::i18n::plural_key("cli.updates-status", status.total),
             count = status.total,
             summary = &summary
         );
@@ -377,7 +383,7 @@ fn display_check_results(
     print_updates_table(&status.updates);
     let summary = format_update_counts(status);
     let msg = t!(
-        "cli.updates-available",
+        &crate::i18n::plural_key("cli.updates-available", status.total),
         count = status.total,
         summary = &summary
     );
@@ -485,7 +491,10 @@ fn cmd_repo_list(repos: &[pike_core::package::Repository], json: bool) -> anyhow
             status,
         );
     }
-    let msg = t!("cli.repo-count", count = repos.len());
+    let msg = t!(
+        &crate::i18n::plural_key("cli.repo-count", repos.len()),
+        count = repos.len()
+    );
     println!("\n  {msg}");
     Ok(())
 }
@@ -501,10 +510,12 @@ pub fn format_grouped_updates(updates: &[PackageUpdate], max_per_source: usize) 
     for (source, pkgs) in &grouped {
         let mut lines = Vec::new();
         let count = pkgs.len();
-        lines.push(format!(
-            " {source} - {count} update{}",
-            if count == 1 { "" } else { "s" }
-        ));
+        let header = t!(
+            &crate::i18n::plural_key("waybar.group.header", count),
+            source = source,
+            count = count
+        );
+        lines.push(format!(" {header}"));
 
         for u in pkgs.iter().take(max_per_source) {
             let installed = if u.installed_version.is_empty() {
@@ -519,7 +530,8 @@ pub fn format_grouped_updates(updates: &[PackageUpdate], max_per_source: usize) 
         }
 
         if count > max_per_source {
-            lines.push(format!("  \u{2026} and {} more", count - max_per_source));
+            let remaining = count - max_per_source;
+            lines.push(format!("  {}", t!("waybar.group.more", count = remaining)));
         }
 
         sections.push(lines.join("\n"));
@@ -590,7 +602,10 @@ pub(crate) fn send_notification(status: &StatusSummary) {
         let body = t!("waybar.tooltip-up-to-date");
         cmd.arg(&*body);
     } else {
-        let title = t!("cli.notify-title", count = status.total);
+        let title = t!(
+            &crate::i18n::plural_key("cli.notify-title", status.total),
+            count = status.total
+        );
         let body = format_grouped_updates(&status.updates, WAYBAR_MAX_PER_SOURCE);
         cmd.arg(&*title).arg(&body);
     }

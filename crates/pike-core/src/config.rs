@@ -118,9 +118,25 @@ impl<'de> Deserialize<'de> for ArchConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+fn default_language() -> String {
+    "auto".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisplayConfig {
+    #[serde(default = "default_language")]
+    pub language: String,
+    #[serde(default)]
     pub architectures: ArchConfig,
+}
+
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        Self {
+            language: default_language(),
+            architectures: ArchConfig::default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -233,6 +249,13 @@ impl Config {
             out.push_str(&format!("{} = {enabled}\n", st.display_name()));
         }
 
+        out.push_str(&format!(
+            "\n[display]\n\
+             # Language: \"auto\" (detect from system), \"en\", or \"pl\"\n\
+             language = \"{}\"\n",
+            self.display.language
+        ));
+
         out.push_str(
             "\n# Architecture filters per source.\n\
              # Only packages matching these architectures are shown in search results.\n\
@@ -302,6 +325,7 @@ mod tests {
             );
         }
         assert_eq!(parsed.logging.file, config.logging.file);
+        assert_eq!(parsed.display.language, config.display.language);
     }
 
     #[test]

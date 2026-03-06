@@ -26,6 +26,15 @@ pub(super) fn render_settings(
         .map(|(idx, row)| match row {
             SettingsRow::Separator => Row::default().bottom_margin(1),
             SettingsRow::GroupHeader(label) => group_header_row(label),
+            SettingsRow::LanguageCycle => {
+                let label = t!("tui.settings.language");
+                let display = match app.config.display.language.as_str() {
+                    "en" => "English",
+                    "pl" => "Polski",
+                    _ => "auto",
+                };
+                value_row(&label, display.to_string(), hover == Some(idx))
+            }
             SettingsRow::SourceToggle(st) => toggle_row(
                 st.display_name(),
                 app.config.sources.enabled(*st),

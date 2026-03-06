@@ -277,9 +277,10 @@ impl App {
             .results
             .sync_selection(&mut view.search_table, pkg_source, |_, _| true);
         self.search.results.loading = false;
+        let count = self.search.results.items.len();
         self.status_message = t!(
-            "tui.status.results",
-            count = self.search.results.items.len()
+            &crate::i18n::plural_key("tui.status.results", count),
+            count = count
         )
         .to_string();
     }
@@ -299,7 +300,11 @@ impl App {
             .sync_selection(&mut view.installed_table, pkg_source, pkg_matches);
         self.installed.loading = false;
         self.installed.loaded = true;
-        self.status_message = t!("tui.status.installed-count", count = total).to_string();
+        self.status_message = t!(
+            &crate::i18n::plural_key("tui.status.installed-count", total),
+            count = total
+        )
+        .to_string();
     }
 
     fn rebuild_installed_set(&mut self, packages: &[Package]) {
@@ -341,7 +346,11 @@ impl App {
         self.updates.filter.clear();
         self.updates
             .sync_selection(&mut view.updates_table, update_source, update_matches);
-        self.status_message = t!("tui.status.updates-loaded", count = total).to_string();
+        self.status_message = t!(
+            &crate::i18n::plural_key("tui.status.updates-loaded", total),
+            count = total
+        )
+        .to_string();
     }
 
     pub(crate) fn updates_filtered_indices(&self) -> Vec<usize> {
@@ -453,7 +462,11 @@ impl App {
             .sync_selection(&mut view.repos_table, repo_source, repo_matches);
         self.repos.list.loading = false;
         self.repos.list.loaded = true;
-        self.status_message = t!("tui.status.repos-count", count = total).to_string();
+        self.status_message = t!(
+            &crate::i18n::plural_key("tui.status.repos-count", total),
+            count = total
+        )
+        .to_string();
     }
 
     pub(crate) fn repos_filtered_indices(&self) -> Vec<usize> {

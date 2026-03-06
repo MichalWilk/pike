@@ -243,15 +243,16 @@ pub(super) fn format_count_line<T>(
     items: &[T],
     shown: usize,
     source_of: impl Fn(&T) -> SourceType,
-    noun: &str,
+    noun_key: &str,
 ) -> Line<'static> {
     let total = items.len();
     let text = if shown < total {
+        let noun = t!(noun_key);
         t!(
             "tui.context.filtered",
             shown = shown,
             total = total,
-            noun = noun
+            noun = &*noun
         )
         .to_string()
     } else {
@@ -266,6 +267,8 @@ pub(super) fn format_count_line<T>(
                 }
             })
             .collect();
+        let key = crate::i18n::plural_key(noun_key, total);
+        let noun = t!(&key);
         if parts.is_empty() {
             format!("{total} {noun}")
         } else {

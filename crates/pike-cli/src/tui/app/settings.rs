@@ -16,6 +16,11 @@ fn is_non_activatable(layout: &[SettingsRow], idx: usize) -> bool {
 fn build_settings_layout(config: &Config) -> Vec<SettingsRow> {
     let mut rows = Vec::new();
     rows.push(SettingsRow::GroupHeader(
+        t!("tui.settings.display").to_string(),
+    ));
+    rows.push(SettingsRow::LanguageCycle);
+    rows.push(SettingsRow::Separator);
+    rows.push(SettingsRow::GroupHeader(
         t!("tui.settings.sources").to_string(),
     ));
     for &st in SourceType::ALL {
@@ -162,6 +167,26 @@ impl App {
                     .display
                     .architectures
                     .set_arches(st, st.default_arches());
+                self.invalidate_settings_cache();
+                true
+            }
+            SettingsRow::LanguageCycle => {
+                const LANGUAGES: &[&str] = &["auto", "en", "pl"];
+                let current = &self.config.display.language;
+                let idx = LANGUAGES.iter().position(|&l| l == current).unwrap_or(0);
+                let next = LANGUAGES[(idx + 1) % LANGUAGES.len()];
+                self.config.display.language = next.to_string();
+                let locale = if next == "auto" {
+                    sys_locale::get_locale()
+                        .unwrap_or_else(|| "en".into())
+                        .split(['-', '_'])
+                        .next()
+                        .unwrap_or("en")
+                        .to_string()
+                } else {
+                    next.to_string()
+                };
+                rust_i18n::set_locale(&locale);
                 self.invalidate_settings_cache();
                 true
             }

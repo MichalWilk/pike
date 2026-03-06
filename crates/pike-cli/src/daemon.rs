@@ -150,6 +150,17 @@ fn reload_config(state: &mut DaemonState) -> DaemonResponse {
                 state.interval_changed = true;
             }
             state.notify = new_notify;
+            let locale = if config.display.language == "auto" {
+                sys_locale::get_locale()
+                    .unwrap_or_else(|| "en".into())
+                    .split(['-', '_'])
+                    .next()
+                    .unwrap_or("en")
+                    .to_string()
+            } else {
+                config.display.language.clone()
+            };
+            rust_i18n::set_locale(&locale);
             tracing::info!(
                 "config reloaded: interval={}s, notify={}",
                 state.interval_secs,
@@ -211,7 +222,11 @@ fn send_notification(status: &StatusSummary) {
         return;
     }
 
-    let title = t!("cli.notify-title", count = status.total).to_string();
+    let title = t!(
+        &crate::i18n::plural_key("cli.notify-title", status.total),
+        count = status.total
+    )
+    .to_string();
     let body = crate::commands::format_update_counts(status);
 
     std::thread::spawn(move || {
