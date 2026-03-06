@@ -84,7 +84,7 @@ impl Database {
     pub fn replace_cache(&self, updates: &[PackageUpdate]) -> Result<(), PikeError> {
         let tx = self.conn.unchecked_transaction()?;
         tx.execute("DELETE FROM update_cache", [])?;
-        insert_updates_in_tx(&tx, updates, false)?;
+        insert_updates_in_tx(&tx, updates, true)?;
         tx.execute(
             "INSERT OR REPLACE INTO metadata (key, value) VALUES ('last_checked', ?1)",
             params![chrono::Utc::now().to_rfc3339()],
