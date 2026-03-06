@@ -6,6 +6,7 @@ Unified package manager for Linux - wraps **dnf** and **flatpak** into a single 
 - Background daemon with periodic update checks and desktop notifications
 - Interactive TUI with 6 tabs: Search, Installed, Updates, Repos, Settings, About
 - Waybar integration with push updates from daemon (no polling)
+- Localization (English, Polish) with CLDR plural rules, configurable in TUI or config file
 - Unix socket IPC, SQLite update cache, XDG-compliant paths
 
 ![Pike TUI](assets/screenshot.png)
@@ -157,6 +158,9 @@ The repo add wizard (`a` on Repos tab) guides through source selection, then met
 # dnf = true
 # flatpak = true
 
+[display]
+# language = "auto"  # "auto", "en", or "pl"
+
 [display.architectures]
 # dnf = ["x86_64", "noarch"]
 
@@ -300,6 +304,3 @@ language = "auto"  # "auto", "en", or "pl"
 - **Snap support** - systemd socket dependency conflicts with tiling WM setups, low Fedora adoption
 - **Per-project versioning via mise** - out of scope, use mise directly for .mise.toml workflows
 
-## License
-
-MIT
