@@ -197,7 +197,7 @@ pub(crate) fn parse_search_output(output: &str) -> Vec<Package> {
 }
 
 fn extract_package_name_arch(name_arch: &str) -> Option<(String, String)> {
-    let (name, arch) = name_arch.split_once('.')?;
+    let (name, arch) = name_arch.rsplit_once('.')?;
     if arch != "src" && !SourceType::Dnf.known_arches().contains(&arch) {
         return None;
     }
@@ -419,5 +419,36 @@ mod tests {
     fn test_parse_repo_list_json_invalid() {
         let result = parse_repo_list_json("not json");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_dotted_package_names() {
+        let output = " python3.11.x86_64\tPython 3.11 interpreter\n python3.12.x86_64\tPython 3.12 interpreter\n";
+        let packages = parse_search_output(output);
+        assert_eq!(packages.len(), 2);
+        assert_eq!(packages[0].name, "python3.11");
+        assert_eq!(packages[0].arch.as_deref(), Some("x86_64"));
+        assert_eq!(packages[1].name, "python3.12");
+        assert_eq!(packages[1].arch.as_deref(), Some("x86_64"));
+    }
+
+    #[test]
+    fn test_parse_dotted_package_check_upgrade() {
+        let output = " python3.11.x86_64              3.11.12-1.fc43                   updates\n";
+        let updates = parse_check_upgrade_output(output);
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0].name, "python3.11");
+        assert_eq!(updates[0].arch.as_deref(), Some("x86_64"));
+        assert_eq!(updates[0].available_version, "3.11.12-1.fc43");
+    }
+
+    #[test]
+    fn test_parse_dotted_package_list_installed() {
+        let output = "python3.11.x86_64\t3.11.11-1.fc43\tPython 3.11 interpreter\n";
+        let packages = parse_list_installed_output(output);
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].name, "python3.11");
+        assert_eq!(packages[0].arch.as_deref(), Some("x86_64"));
+        assert_eq!(packages[0].version, "3.11.11-1.fc43");
     }
 }
