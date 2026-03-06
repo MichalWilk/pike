@@ -212,7 +212,7 @@ Add to `~/.config/waybar/config`:
     "exec": "pike waybar",
     "return-type": "json",
     "on-click": "pike check --notify-always",
-    "on-click-right": "kitty --title pike-tui -e pike tui --tab updates",
+    "on-click-right": "$TERMINAL -e pike tui --tab updates",
     "format": "{}"
 }
 ```
@@ -265,7 +265,7 @@ Optionally bind a key to open the TUI directly:
 
 ```ini
 # ~/.config/hypr/hyprland.conf
-bind = $mainMod, P, exec, kitty --class pike-tui -e pike tui
+bind = $mainMod, P, exec, $terminal --class pike-tui -e pike tui
 windowrulev2 = float, class:(pike-tui)
 windowrulev2 = size 900 600, class:(pike-tui)
 ```
