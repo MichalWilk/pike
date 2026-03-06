@@ -28,10 +28,10 @@ Requires **dnf** and/or **flatpak** on the system (pre-installed on Fedora).
 ### From GitHub release
 
 ```bash
-curl -fsSL https://github.com/MichalWilk/pike/releases/latest/download/pike-linux-x86_64.tar.gz -o /tmp/pike.tar.gz
-curl -fsSL https://github.com/MichalWilk/pike/releases/latest/download/pike-linux-x86_64.tar.gz.sha256 -o /tmp/pike.tar.gz.sha256
-sha256sum -c /tmp/pike.tar.gz.sha256
-sudo tar xzf /tmp/pike.tar.gz -C /usr/local/bin pike
+curl -fsSL https://github.com/MichalWilk/pike/releases/latest/download/pike-linux-x86_64.tar.gz -o /tmp/pike-linux-x86_64.tar.gz
+curl -fsSL https://github.com/MichalWilk/pike/releases/latest/download/pike-linux-x86_64.tar.gz.sha256 -o /tmp/pike-linux-x86_64.tar.gz.sha256
+cd /tmp && sha256sum -c pike-linux-x86_64.tar.gz.sha256
+sudo tar xzf /tmp/pike-linux-x86_64.tar.gz -C /usr/local/bin pike
 ```
 
 ### From source
