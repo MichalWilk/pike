@@ -4,7 +4,7 @@ use crate::error::PikeError;
 use crate::package::{Package, PackageUpdate, RepoMethod, Repository, SourceType};
 use crate::source::{
     PackageSource, Result, parse_installed_versions, run_captured, run_captured_allow_exit,
-    run_interactive,
+    run_privileged,
 };
 
 fn version_key(name: &str, arch: Option<&str>) -> String {
@@ -59,15 +59,15 @@ impl PackageSource for DnfSource {
     }
 
     async fn install(&self, package: &str) -> Result<()> {
-        run_interactive("sudo", &["dnf5", "install", "-y", package]).await
+        run_privileged(&["dnf5", "install", "-y", package]).await
     }
 
     async fn remove(&self, package: &str, _purge: bool) -> Result<()> {
-        run_interactive("sudo", &["dnf5", "remove", "-y", package]).await
+        run_privileged(&["dnf5", "remove", "-y", package]).await
     }
 
     async fn autoremove(&self) -> Result<()> {
-        run_interactive("sudo", &["dnf5", "autoremove", "-y"]).await
+        run_privileged(&["dnf5", "autoremove", "-y"]).await
     }
 
     async fn check_updates(&self) -> Result<Vec<PackageUpdate>> {
@@ -96,11 +96,11 @@ impl PackageSource for DnfSource {
     }
 
     async fn update(&self, package: &str) -> Result<()> {
-        run_interactive("sudo", &["dnf5", "upgrade", "-y", package]).await
+        run_privileged(&["dnf5", "upgrade", "-y", package]).await
     }
 
     async fn update_all(&self) -> Result<()> {
-        run_interactive("sudo", &["dnf5", "upgrade", "-y"]).await
+        run_privileged(&["dnf5", "upgrade", "-y"]).await
     }
 
     async fn list_installed(&self) -> Result<Vec<Package>> {
@@ -125,7 +125,7 @@ impl PackageSource for DnfSource {
     async fn set_repo_enabled(&self, id: &str, enabled: bool) -> Result<()> {
         let value = if enabled { "1" } else { "0" };
         let opt = format!("{}.enabled={}", id, value);
-        run_interactive("sudo", &["dnf5", "config-manager", "setopt", &opt]).await
+        run_privileged(&["dnf5", "config-manager", "setopt", &opt]).await
     }
 
     async fn add_repo(
@@ -141,12 +141,12 @@ impl PackageSource for DnfSource {
                 let arg = format!("--from-repofile={url}");
                 dnf_addrepo(&arg, repo_id, name, gpgcheck).await
             }
-            RepoMethod::Copr => run_interactive("sudo", &["dnf5", "copr", "enable", url]).await,
+            RepoMethod::Copr => run_privileged(&["dnf5", "copr", "enable", url]).await,
             RepoMethod::BaseUrl => {
                 let arg = format!("--set=baseurl={url}");
                 dnf_addrepo(&arg, repo_id, name, gpgcheck).await
             }
-            RepoMethod::RpmPackage => run_interactive("sudo", &["dnf5", "install", url]).await,
+            RepoMethod::RpmPackage => run_privileged(&["dnf5", "install", url]).await,
             _ => Err(PikeError::Other(format!(
                 "dnf does not support {} method",
                 method
@@ -168,7 +168,7 @@ async fn dnf_addrepo(url_arg: &str, repo_id: &str, name: &str, gpgcheck: bool) -
     if !gpgcheck {
         args.push("--set=gpgcheck=0");
     }
-    run_interactive("sudo", &args).await
+    run_privileged(&args).await
 }
 
 pub(crate) fn parse_search_output(output: &str) -> Vec<Package> {

@@ -154,6 +154,9 @@ The repo add wizard (`a` on Repos tab) guides through source selection, then met
 `~/.config/pike/config.toml` -created with defaults on first run, editable manually or via TUI Settings tab. Sources are auto-detected: each is enabled only if its binary (`dnf`, `flatpak`) is found on the system.
 
 ```toml
+[general]
+# privilege_escalation = "auto"  # "auto", "sudo", "pkexec", or "doas"
+
 [sources]
 # dnf = true
 # flatpak = true
@@ -173,6 +176,28 @@ The repo add wizard (`a` on Repos tab) guides through source selection, then met
 ```
 
 See [`config.example.toml`](config.example.toml) for full documentation. Changes to daemon settings are propagated to a running daemon immediately.
+
+### Privilege escalation
+
+dnf operations (`install`, `remove`, `update`, `autoremove`, repo management) require root. Pike escalates privileges using a configurable method:
+
+| Method | Behavior |
+|--------|----------|
+| `auto` (default) | Uses `sudo` when a TTY is available (terminal). When no TTY is detected (e.g. Waybar on-click, scripts), falls back to `pkexec` (polkit GUI dialog). Errors if neither is available. |
+| `sudo` | Always uses `sudo`. Fails with a clear error when no TTY is available. |
+| `pkexec` | Always uses `pkexec` (polkit GUI password prompt). Works without a TTY. |
+| `doas` | Always uses `doas` (OpenBSD sudo alternative). Fails without a TTY. |
+
+flatpak operations run as the current user and do not require privilege escalation.
+
+Set in config:
+
+```toml
+[general]
+privilege_escalation = "auto"
+```
+
+**Waybar on-click:** The default `auto` mode detects no TTY in Waybar's `on-click` handler and uses `pkexec` automatically. If you prefer a specific method, set it explicitly.
 
 ## Files
 

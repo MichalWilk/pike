@@ -174,6 +174,33 @@ impl IconStyle {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PrivilegeEscalation {
+    #[default]
+    Auto,
+    Sudo,
+    Pkexec,
+    Doas,
+}
+
+impl std::fmt::Display for PrivilegeEscalation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Sudo => write!(f, "sudo"),
+            Self::Pkexec => write!(f, "pkexec"),
+            Self::Doas => write!(f, "doas"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GeneralConfig {
+    #[serde(default)]
+    pub privilege_escalation: PrivilegeEscalation,
+}
+
 fn default_daemon_interval() -> u64 {
     600
 }
@@ -201,6 +228,8 @@ impl Default for DaemonConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
+    #[serde(default)]
+    pub general: GeneralConfig,
     pub sources: SourcesConfig,
     #[serde(default)]
     pub display: DisplayConfig,
@@ -222,6 +251,7 @@ impl Config {
 
         if !path.exists() {
             let config = Config {
+                general: GeneralConfig::default(),
                 sources: SourcesConfig::detect(),
                 display: DisplayConfig::default(),
                 logging: LoggingConfig::default(),
@@ -244,7 +274,19 @@ impl Config {
 
     pub fn to_toml_commented(&self) -> String {
         let mut out = String::new();
-        out.push_str("[sources]\n");
+        out.push_str(
+            "[general]\n\
+             # Privilege escalation method for system package operations (dnf install/remove/update)\n\
+             # \"auto\" = sudo when TTY available, pkexec (GUI prompt) otherwise\n\
+             # \"sudo\" / \"doas\" = always use terminal prompt (fails without TTY)\n\
+             # \"pkexec\" = always use polkit GUI dialog\n",
+        );
+        out.push_str(&format!(
+            "privilege_escalation = \"{}\"\n",
+            self.general.privilege_escalation
+        ));
+
+        out.push_str("\n[sources]\n");
         for (st, enabled) in self.sources.iter() {
             out.push_str(&format!("{} = {enabled}\n", st.display_name()));
         }

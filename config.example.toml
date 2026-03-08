@@ -1,6 +1,13 @@
 # Pike configuration
 # All values shown below are defaults. Uncomment to override.
 
+[general]
+# Privilege escalation method for system package operations (dnf install/remove/update)
+# "auto" = sudo when TTY available, pkexec (GUI prompt) otherwise
+# "sudo" / "doas" = always use terminal prompt (fails without TTY)
+# "pkexec" = always use polkit GUI dialog
+# privilege_escalation = "auto"
+
 [sources]
 # dnf = true
 # flatpak = true

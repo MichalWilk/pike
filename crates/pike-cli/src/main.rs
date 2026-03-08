@@ -177,6 +177,7 @@ pub(crate) enum RepoCommands {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let config = Config::load()?;
+    pike_core::source::set_privilege_method(config.general.privilege_escalation);
     let locale = if config.display.language == "auto" {
         let lang = sys_locale::get_locale().unwrap_or_else(|| String::from("en"));
         lang.split(['-', '_']).next().unwrap_or("en").to_string()

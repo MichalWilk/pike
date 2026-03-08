@@ -1,10 +1,20 @@
 pub mod dnf;
 pub mod flatpak;
 
+use std::io::IsTerminal;
+use std::sync::OnceLock;
+
 use async_trait::async_trait;
 
+use crate::config::PrivilegeEscalation;
 use crate::error::PikeError;
 use crate::package::{Package, PackageUpdate, RepoMethod, Repository, SourceType};
+
+static PRIVILEGE_METHOD: OnceLock<PrivilegeEscalation> = OnceLock::new();
+
+pub fn set_privilege_method(method: PrivilegeEscalation) {
+    let _ = PRIVILEGE_METHOD.set(method);
+}
 
 pub type Result<T> = std::result::Result<T, PikeError>;
 
@@ -136,4 +146,54 @@ pub async fn run_interactive(cmd: &str, args: &[&str]) -> Result<()> {
         });
     }
     Ok(())
+}
+
+pub async fn run_privileged(args: &[&str]) -> Result<()> {
+    let cmd = resolve_privilege_cmd()?;
+    run_interactive(cmd, args).await
+}
+
+fn resolve_privilege_cmd() -> Result<&'static str> {
+    let method = PRIVILEGE_METHOD.get().copied().unwrap_or_default();
+    match method {
+        PrivilegeEscalation::Auto => {
+            if std::io::stdin().is_terminal() {
+                Ok("sudo")
+            } else if binary_exists_sync("pkexec") {
+                Ok("pkexec")
+            } else {
+                Err(PikeError::Other(
+                    "no TTY available and pkexec not found; set privilege_escalation in config or run from a terminal".into(),
+                ))
+            }
+        }
+        PrivilegeEscalation::Sudo => {
+            if std::io::stdin().is_terminal() {
+                Ok("sudo")
+            } else {
+                Err(PikeError::Other(
+                    "sudo requires a terminal; run from a terminal or set privilege_escalation = \"pkexec\" in config".into(),
+                ))
+            }
+        }
+        PrivilegeEscalation::Pkexec => Ok("pkexec"),
+        PrivilegeEscalation::Doas => {
+            if std::io::stdin().is_terminal() {
+                Ok("doas")
+            } else {
+                Err(PikeError::Other(
+                    "doas requires a terminal; run from a terminal or set privilege_escalation = \"pkexec\" in config".into(),
+                ))
+            }
+        }
+    }
+}
+
+fn binary_exists_sync(name: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(name)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
