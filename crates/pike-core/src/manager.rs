@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::config::Config;
 use crate::db::Database;
 use crate::error::PikeError;
@@ -78,6 +80,20 @@ impl PackageManager {
         Ok(s.name().to_string())
     }
 
+    pub async fn install_many(
+        &self,
+        packages: &[String],
+        source: Option<SourceType>,
+    ) -> Result<Vec<(String, Vec<String>)>, PikeError> {
+        let groups = self.resolve_source_groups(packages, source).await?;
+        let mut result = Vec::new();
+        for (s, pkgs) in &groups {
+            s.install_many(pkgs).await?;
+            result.push((s.name().to_string(), pkgs.clone()));
+        }
+        Ok(result)
+    }
+
     pub async fn remove(
         &self,
         package: &str,
@@ -87,6 +103,21 @@ impl PackageManager {
         let s = self.resolve_package_source(package, source).await?;
         s.remove(package, purge).await?;
         Ok(s.name().to_string())
+    }
+
+    pub async fn remove_many(
+        &self,
+        packages: &[String],
+        source: Option<SourceType>,
+        purge: bool,
+    ) -> Result<Vec<(String, Vec<String>)>, PikeError> {
+        let groups = self.resolve_source_groups(packages, source).await?;
+        let mut result = Vec::new();
+        for (s, pkgs) in &groups {
+            s.remove_many(pkgs, purge).await?;
+            result.push((s.name().to_string(), pkgs.clone()));
+        }
+        Ok(result)
     }
 
     pub async fn autoremove_source(&self, source: SourceType) -> Result<(), PikeError> {
@@ -105,6 +136,20 @@ impl PackageManager {
             name: package.to_string(),
             source_name: "any source".to_string(),
         })
+    }
+
+    pub async fn update_many(
+        &self,
+        packages: &[String],
+        source: Option<SourceType>,
+    ) -> Result<Vec<(String, Vec<String>)>, PikeError> {
+        let groups = self.resolve_source_groups(packages, source).await?;
+        let mut result = Vec::new();
+        for (s, pkgs) in &groups {
+            s.update_many(pkgs).await?;
+            result.push((s.name().to_string(), pkgs.clone()));
+        }
+        Ok(result)
     }
 
     pub async fn update_source(&self, package: &str, source: SourceType) -> Result<(), PikeError> {
@@ -203,6 +248,33 @@ impl PackageManager {
             .find(|s| s.source_type() == source_type)
             .map(|s| s.as_ref())
             .ok_or_else(|| PikeError::Other(format!("{} source not available", source_type)))
+    }
+
+    async fn resolve_source_groups(
+        &self,
+        packages: &[String],
+        source: Option<SourceType>,
+    ) -> Result<Vec<(&dyn PackageSource, Vec<String>)>, PikeError> {
+        match source {
+            Some(st) => {
+                let s = self.get_source(st)?;
+                Ok(vec![(s, packages.to_vec())])
+            }
+            None => {
+                let mut grouped: BTreeMap<SourceType, Vec<String>> = BTreeMap::new();
+                for pkg in packages {
+                    let s = self.resolve_package_source(pkg, None).await?;
+                    grouped
+                        .entry(s.source_type())
+                        .or_default()
+                        .push(pkg.clone());
+                }
+                grouped
+                    .into_iter()
+                    .map(|(st, pkgs)| Ok((self.get_source(st)?, pkgs)))
+                    .collect()
+            }
+        }
     }
 
     async fn resolve_package_source(

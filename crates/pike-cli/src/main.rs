@@ -40,17 +40,21 @@ enum Commands {
         #[arg(help = "Filter by source: dnf or flatpak", long, short = 'S')]
         source: Option<String>,
     },
-    #[command(about = "Install a package", visible_alias = "i", alias = "add")]
+    #[command(
+        about = "Install one or more packages",
+        visible_alias = "i",
+        alias = "add"
+    )]
     Install {
-        #[arg(help = "Package name or flatpak app ID (e.g. org.mozilla.firefox)")]
-        package: String,
+        #[arg(help = "Package names or flatpak app IDs", required = true)]
+        packages: Vec<String>,
         #[arg(help = "Force source: dnf or flatpak", long, short = 'S')]
         source: Option<String>,
     },
-    #[command(about = "Remove a package", visible_alias = "rm", aliases = ["uninstall", "erase"])]
+    #[command(about = "Remove one or more packages", visible_alias = "rm", aliases = ["uninstall", "erase"])]
     Remove {
-        #[arg(help = "Package name or flatpak app ID")]
-        package: String,
+        #[arg(help = "Package names or flatpak app IDs", required = true)]
+        packages: Vec<String>,
         #[arg(help = "Force source: dnf or flatpak", long, short = 'S')]
         source: Option<String>,
         #[arg(
@@ -61,13 +65,15 @@ enum Commands {
         purge: bool,
     },
     #[command(
-        about = "Update one or all packages",
+        about = "Update one, many, or all packages",
         visible_alias = "up",
         alias = "upgrade"
     )]
     Update {
-        #[arg(help = "Package to update (updates all if omitted)")]
-        package: Option<String>,
+        #[arg(help = "Packages to update (updates all if omitted)")]
+        packages: Vec<String>,
+        #[arg(help = "Force source: dnf or flatpak", long, short = 'S')]
+        source: Option<String>,
     },
     #[command(
         about = "Remove orphaned dependencies and unused runtimes",
@@ -196,18 +202,18 @@ async fn main() -> anyhow::Result<()> {
         Commands::Search { query, source } => {
             commands::search(&manager, &query, source.as_deref(), cli.json).await?;
         }
-        Commands::Install { package, source } => {
-            commands::install(&manager, &package, source.as_deref()).await?;
+        Commands::Install { packages, source } => {
+            commands::install(&manager, &packages, source.as_deref()).await?;
         }
         Commands::Remove {
-            package,
+            packages,
             source,
             purge,
         } => {
-            commands::remove(&manager, &package, source.as_deref(), purge).await?;
+            commands::remove(&manager, &packages, source.as_deref(), purge).await?;
         }
-        Commands::Update { package } => {
-            commands::update(&manager, package.as_deref()).await?;
+        Commands::Update { packages, source } => {
+            commands::update(&manager, &packages, source.as_deref()).await?;
         }
         Commands::Autoremove => {
             commands::autoremove(&manager).await?;

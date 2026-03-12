@@ -32,6 +32,27 @@ pub trait PackageSource: Send + Sync {
     async fn update_all(&self) -> Result<()>;
     async fn list_installed(&self) -> Result<Vec<Package>>;
 
+    async fn install_many(&self, packages: &[String]) -> Result<()> {
+        for pkg in packages {
+            self.install(pkg).await?;
+        }
+        Ok(())
+    }
+
+    async fn remove_many(&self, packages: &[String], purge: bool) -> Result<()> {
+        for pkg in packages {
+            self.remove(pkg, purge).await?;
+        }
+        Ok(())
+    }
+
+    async fn update_many(&self, packages: &[String]) -> Result<()> {
+        for pkg in packages {
+            self.update(pkg).await?;
+        }
+        Ok(())
+    }
+
     async fn list_repos(&self) -> Result<Vec<Repository>> {
         Err(PikeError::Other(format!(
             "{} does not support listing repos",

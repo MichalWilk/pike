@@ -72,39 +72,51 @@ pub async fn search(
 
 pub async fn install(
     manager: &PackageManager,
-    package: &str,
+    packages: &[String],
     source: Option<&str>,
 ) -> anyhow::Result<()> {
     let source_filter = parse_source_filter(source)?;
-    let msg = t!("cli.installing", pkg = package);
-    eprintln!("  [{}] {msg}", "pike".cyan());
-    let src_name = manager.install(package, source_filter).await?;
-    let msg = t!("cli.installed", pkg = package);
-    eprintln!("  [{}] {msg}", src_name.cyan());
+    let label = packages.join(", ");
+    eprintln!(
+        "  [{}] {}",
+        "pike".cyan(),
+        t!("cli.installing", pkg = &label)
+    );
+    let groups = manager.install_many(packages, source_filter).await?;
+    for (src_name, pkgs) in &groups {
+        eprintln!(
+            "  [{}] {}",
+            src_name.cyan(),
+            t!("cli.installed", pkg = &pkgs.join(", "))
+        );
+    }
     notify_daemon_recheck();
     Ok(())
 }
 
 pub async fn remove(
     manager: &PackageManager,
-    package: &str,
+    packages: &[String],
     source: Option<&str>,
     purge: bool,
 ) -> anyhow::Result<()> {
     let source_filter = parse_source_filter(source)?;
+    let label = packages.join(", ");
     let action_msg = if purge {
-        t!("cli.purging", pkg = package)
+        t!("cli.purging", pkg = &label)
     } else {
-        t!("cli.removing", pkg = package)
+        t!("cli.removing", pkg = &label)
     };
     eprintln!("  [{}] {action_msg}", "pike".cyan());
-    let src_name = manager.remove(package, source_filter, purge).await?;
-    let done_msg = if purge {
-        t!("cli.purged", pkg = package)
-    } else {
-        t!("cli.removed", pkg = package)
-    };
-    eprintln!("  [{}] {done_msg}", src_name.cyan());
+    let groups = manager.remove_many(packages, source_filter, purge).await?;
+    for (src_name, pkgs) in &groups {
+        let done_msg = if purge {
+            t!("cli.purged", pkg = &pkgs.join(", "))
+        } else {
+            t!("cli.removed", pkg = &pkgs.join(", "))
+        };
+        eprintln!("  [{}] {done_msg}", src_name.cyan());
+    }
     notify_daemon_recheck();
     Ok(())
 }
@@ -129,33 +141,49 @@ pub async fn autoremove(manager: &PackageManager) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn update(manager: &PackageManager, package: Option<&str>) -> anyhow::Result<()> {
-    match package {
-        Some(pkg) => {
-            let msg = t!("cli.updating-pkg", pkg = pkg);
-            eprintln!("  [{}] {msg}", "pike".cyan());
-            manager.update_package(pkg).await?;
-            notify_daemon_recheck();
+pub async fn update(
+    manager: &PackageManager,
+    packages: &[String],
+    source: Option<&str>,
+) -> anyhow::Result<()> {
+    let source_filter = parse_source_filter(source)?;
+    if packages.is_empty() {
+        let msg = t!("cli.updating-source");
+        let mut had_error = false;
+        let sources = match source_filter {
+            Some(st) => vec![st],
+            None => manager.active_source_types(),
+        };
+        for st in &sources {
+            let name = st.display_name();
+            eprintln!("  [{}] {msg}", name.cyan());
+            if let Err(e) = manager.update_all_source(*st).await {
+                eprintln!("  [{}] {}", name.red(), e);
+                had_error = true;
+            }
         }
-        None => {
-            let msg = t!("cli.updating-source");
-            let mut had_error = false;
-            for st in &manager.active_source_types() {
-                let name = st.display_name();
-                eprintln!("  [{}] {msg}", name.cyan());
-                if let Err(e) = manager.update_all_source(*st).await {
-                    eprintln!("  [{}] {}", name.red(), e);
-                    had_error = true;
-                }
-            }
-            eprintln!();
-            if !had_error {
-                let done = t!("cli.all-sources-updated");
-                eprintln!("  {}", done.green());
-            }
-            notify_daemon_recheck();
+        eprintln!();
+        if !had_error {
+            let done = t!("cli.all-sources-updated");
+            eprintln!("  {}", done.green());
+        }
+    } else if packages.len() == 1 && source_filter.is_none() {
+        let pkg = &packages[0];
+        let msg = t!("cli.updating-pkg", pkg = pkg);
+        eprintln!("  [{}] {msg}", "pike".cyan());
+        manager.update_package(pkg).await?;
+    } else {
+        let label = packages.join(", ");
+        let msg = t!("cli.updating-pkg", pkg = &label);
+        eprintln!("  [{}] {msg}", "pike".cyan());
+        let groups = manager.update_many(packages, source_filter).await?;
+        for (src_name, pkgs) in &groups {
+            let updated = pkgs.join(", ");
+            let msg = t!("cli.updated", pkg = &updated);
+            eprintln!("  [{}] {msg}", src_name.cyan());
         }
     }
+    notify_daemon_recheck();
     Ok(())
 }
 

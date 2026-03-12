@@ -88,10 +88,14 @@ See [Waybar Integration](#waybar-integration) below.
 pike search firefox                # search across dnf + flatpak
 pike install firefox               # auto-detect source
 pike install firefox -S flatpak    # force source
+pike install vim git curl          # install multiple packages
 pike remove firefox
 pike remove firefox --purge        # also remove app data (flatpak)
+pike remove vim git curl           # remove multiple packages
 pike update                        # update all packages
+pike update -S dnf                 # update all dnf packages only
 pike update bash                   # update single package
+pike update bash vim               # update multiple packages
 pike autoremove                    # remove orphaned deps & unused runtimes
 pike check                         # check for updates (caches results)
 pike check --notify                # check + notify if updates found

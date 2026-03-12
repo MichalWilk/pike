@@ -36,6 +36,17 @@ impl PackageSource for FlatpakSource {
         run_interactive("flatpak", &["install", "-y", &app_id]).await
     }
 
+    async fn install_many(&self, packages: &[String]) -> Result<()> {
+        let mut app_ids = Vec::with_capacity(packages.len());
+        for pkg in packages {
+            app_ids.push(self.resolve_app_id(pkg).await?);
+        }
+        let mut args = vec!["install", "-y"];
+        let refs: Vec<&str> = app_ids.iter().map(|s| s.as_str()).collect();
+        args.extend_from_slice(&refs);
+        run_interactive("flatpak", &args).await
+    }
+
     async fn remove(&self, package: &str, purge: bool) -> Result<()> {
         let app_id = self.resolve_app_id(package).await?;
         if purge {
@@ -43,6 +54,20 @@ impl PackageSource for FlatpakSource {
         } else {
             run_interactive("flatpak", &["uninstall", "-y", &app_id]).await
         }
+    }
+
+    async fn remove_many(&self, packages: &[String], purge: bool) -> Result<()> {
+        let mut app_ids = Vec::with_capacity(packages.len());
+        for pkg in packages {
+            app_ids.push(self.resolve_app_id(pkg).await?);
+        }
+        let mut args = vec!["uninstall", "-y"];
+        if purge {
+            args.push("--delete-data");
+        }
+        let refs: Vec<&str> = app_ids.iter().map(|s| s.as_str()).collect();
+        args.extend_from_slice(&refs);
+        run_interactive("flatpak", &args).await
     }
 
     async fn autoremove(&self) -> Result<()> {
@@ -79,6 +104,17 @@ impl PackageSource for FlatpakSource {
     async fn update(&self, package: &str) -> Result<()> {
         let app_id = self.resolve_app_id(package).await?;
         run_interactive("flatpak", &["update", "-y", &app_id]).await
+    }
+
+    async fn update_many(&self, packages: &[String]) -> Result<()> {
+        let mut app_ids = Vec::with_capacity(packages.len());
+        for pkg in packages {
+            app_ids.push(self.resolve_app_id(pkg).await?);
+        }
+        let mut args = vec!["update", "-y"];
+        let refs: Vec<&str> = app_ids.iter().map(|s| s.as_str()).collect();
+        args.extend_from_slice(&refs);
+        run_interactive("flatpak", &args).await
     }
 
     async fn update_all(&self) -> Result<()> {

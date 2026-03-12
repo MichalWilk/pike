@@ -62,8 +62,22 @@ impl PackageSource for DnfSource {
         run_privileged(&["dnf5", "install", "-y", package]).await
     }
 
+    async fn install_many(&self, packages: &[String]) -> Result<()> {
+        let mut args = vec!["dnf5", "install", "-y"];
+        let refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
+        args.extend_from_slice(&refs);
+        run_privileged(&args).await
+    }
+
     async fn remove(&self, package: &str, _purge: bool) -> Result<()> {
         run_privileged(&["dnf5", "remove", "-y", package]).await
+    }
+
+    async fn remove_many(&self, packages: &[String], _purge: bool) -> Result<()> {
+        let mut args = vec!["dnf5", "remove", "-y"];
+        let refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
+        args.extend_from_slice(&refs);
+        run_privileged(&args).await
     }
 
     async fn autoremove(&self) -> Result<()> {
@@ -97,6 +111,13 @@ impl PackageSource for DnfSource {
 
     async fn update(&self, package: &str) -> Result<()> {
         run_privileged(&["dnf5", "upgrade", "-y", package]).await
+    }
+
+    async fn update_many(&self, packages: &[String]) -> Result<()> {
+        let mut args = vec!["dnf5", "upgrade", "-y"];
+        let refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
+        args.extend_from_slice(&refs);
+        run_privileged(&args).await
     }
 
     async fn update_all(&self) -> Result<()> {
