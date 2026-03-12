@@ -110,18 +110,18 @@ impl PackageSource for DnfSource {
     }
 
     async fn update(&self, package: &str) -> Result<()> {
-        run_privileged(&["dnf5", "upgrade", "-y", package]).await
+        run_privileged(&["dnf5", "upgrade", "-y", "--refresh", package]).await
     }
 
     async fn update_many(&self, packages: &[String]) -> Result<()> {
-        let mut args = vec!["dnf5", "upgrade", "-y"];
+        let mut args = vec!["dnf5", "upgrade", "-y", "--refresh"];
         let refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
         args.extend_from_slice(&refs);
         run_privileged(&args).await
     }
 
     async fn update_all(&self) -> Result<()> {
-        run_privileged(&["dnf5", "upgrade", "-y"]).await
+        run_privileged(&["dnf5", "upgrade", "-y", "--refresh"]).await
     }
 
     async fn list_installed(&self) -> Result<Vec<Package>> {
