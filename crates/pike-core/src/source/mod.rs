@@ -1,3 +1,4 @@
+pub mod apt;
 pub mod dnf;
 pub mod flatpak;
 
@@ -96,6 +97,7 @@ pub fn create_sources(active: &[SourceType]) -> Vec<Box<dyn PackageSource>> {
             match st {
                 SourceType::Dnf => Box::new(dnf::DnfSource),
                 SourceType::Flatpak => Box::new(flatpak::FlatpakSource),
+                SourceType::Apt => Box::new(apt::AptSource),
             }
         })
         .collect()

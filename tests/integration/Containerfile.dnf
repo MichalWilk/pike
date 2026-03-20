@@ -1,0 +1,9 @@
+FROM fedora:43
+
+RUN dnf5 install -y python3 which && dnf5 clean all
+
+WORKDIR /pike
+COPY tests/integration/test-backend.sh tests/
+COPY target/release/pike .
+
+ENTRYPOINT ["/pike/tests/test-backend.sh", "dnf"]

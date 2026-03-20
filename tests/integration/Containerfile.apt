@@ -1,0 +1,13 @@
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get install -y python3 software-properties-common sudo && \
+    apt-get clean
+
+WORKDIR /pike
+COPY tests/integration/test-backend.sh tests/
+COPY target/release/pike .
+
+ENTRYPOINT ["/pike/tests/test-backend.sh", "apt"]

@@ -56,7 +56,10 @@ impl<'de> Deserialize<'de> for SourcesConfig {
         let string_map = BTreeMap::<String, bool>::deserialize(deserializer)?;
         let mut map = BTreeMap::new();
         for &st in SourceType::ALL {
-            let enabled = string_map.get(st.display_name()).copied().unwrap_or(true);
+            let enabled = string_map
+                .get(st.display_name())
+                .copied()
+                .unwrap_or_else(|| st.is_available());
             map.insert(st, enabled);
         }
         Ok(Self { map })

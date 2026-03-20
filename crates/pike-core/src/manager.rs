@@ -30,7 +30,7 @@ impl PackageManager {
 
         if active.is_empty() {
             return Err(PikeError::Other(
-                "no package managers found (need dnf5 or flatpak)".into(),
+                "no package managers found (need dnf5, apt-get, or flatpak)".into(),
             ));
         }
 
@@ -407,6 +407,19 @@ pub fn validate_repo_input(
                 ));
             }
         }
+        RepoMethod::Ppa => {
+            if url.is_empty() {
+                return Err(PikeError::Validation(
+                    "PPA identifier is required (user/ppa-name)".into(),
+                ));
+            }
+            let parts: Vec<&str> = url.splitn(2, '/').collect();
+            if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+                return Err(PikeError::Validation(
+                    "PPA identifier must be in user/ppa-name format".into(),
+                ));
+            }
+        }
         _ => {
             if !has_valid_url_scheme(url) {
                 return Err(PikeError::Validation(
@@ -439,6 +452,36 @@ mod tests {
     fn test_validate_repo_copr_valid() {
         let result = validate_repo_input(RepoMethod::Copr, "", "", "owner/project");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_repo_ppa_empty_url_rejected() {
+        let result = validate_repo_input(RepoMethod::Ppa, "", "", "");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_repo_ppa_valid() {
+        let result = validate_repo_input(RepoMethod::Ppa, "", "", "user/ppa-name");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_repo_ppa_no_slash_rejected() {
+        let result = validate_repo_input(RepoMethod::Ppa, "", "", "noslash");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_repo_ppa_empty_owner_rejected() {
+        let result = validate_repo_input(RepoMethod::Ppa, "", "", "/ppa-name");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_repo_ppa_empty_name_rejected() {
+        let result = validate_repo_input(RepoMethod::Ppa, "", "", "user/");
+        assert!(result.is_err());
     }
 }
 

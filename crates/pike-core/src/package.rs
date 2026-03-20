@@ -17,15 +17,17 @@ pub struct Package {
 pub enum SourceType {
     Dnf,
     Flatpak,
+    Apt,
 }
 
 impl SourceType {
-    pub const ALL: &[SourceType] = &[SourceType::Dnf, SourceType::Flatpak];
+    pub const ALL: &[SourceType] = &[SourceType::Dnf, SourceType::Flatpak, SourceType::Apt];
 
     pub fn binary_name(self) -> &'static str {
         match self {
             Self::Dnf => "dnf5",
             Self::Flatpak => "flatpak",
+            Self::Apt => "apt-get",
         }
     }
 
@@ -42,12 +44,13 @@ impl SourceType {
         match self {
             Self::Dnf => "dnf",
             Self::Flatpak => "flatpak",
+            Self::Apt => "apt",
         }
     }
 
     pub fn has_arch_filter(self) -> bool {
         match self {
-            Self::Dnf => true,
+            Self::Dnf | Self::Apt => true,
             Self::Flatpak => false,
         }
     }
@@ -57,6 +60,7 @@ impl SourceType {
             Self::Dnf => &[
                 "x86_64", "aarch64", "i686", "noarch", "armv7hl", "ppc64le", "s390x",
             ],
+            Self::Apt => &["amd64", "arm64", "armhf", "i386", "all"],
             Self::Flatpak => &[],
         }
     }
@@ -72,6 +76,16 @@ impl SourceType {
                 };
                 vec![mapped.to_string(), "noarch".to_string()]
             }
+            Self::Apt => {
+                let mapped = match host {
+                    "x86_64" => "amd64",
+                    "aarch64" => "arm64",
+                    "arm" => "armhf",
+                    "x86" => "i386",
+                    other => other,
+                };
+                vec![mapped.to_string(), "all".to_string()]
+            }
             Self::Flatpak => Vec::new(),
         }
     }
@@ -84,6 +98,7 @@ pub enum RepoMethod {
     BaseUrl,
     RpmPackage,
     RemoteAdd,
+    Ppa,
 }
 
 impl RepoMethod {
@@ -95,6 +110,7 @@ impl RepoMethod {
                 RepoMethod::BaseUrl,
                 RepoMethod::RpmPackage,
             ],
+            SourceType::Apt => &[RepoMethod::Ppa, RepoMethod::BaseUrl],
             SourceType::Flatpak => &[RepoMethod::RemoteAdd],
         }
     }
@@ -106,6 +122,7 @@ impl RepoMethod {
             Self::BaseUrl => "Base URL",
             Self::RpmPackage => "RPM package URL",
             Self::RemoteAdd => "Flatpak remote",
+            Self::Ppa => "PPA (user/ppa-name)",
         }
     }
 
@@ -128,6 +145,7 @@ impl RepoMethod {
     pub fn url_label(self) -> &'static str {
         match self {
             Self::Copr => "owner/project",
+            Self::Ppa => "user/ppa-name",
             _ => "URL",
         }
     }

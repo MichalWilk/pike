@@ -20,8 +20,9 @@ fn parse_repo_method(s: &str) -> anyhow::Result<RepoMethod> {
         "baseurl" | "base-url" => Ok(RepoMethod::BaseUrl),
         "rpm" | "rpm-package" => Ok(RepoMethod::RpmPackage),
         "remote" | "remote-add" => Ok(RepoMethod::RemoteAdd),
+        "ppa" => Ok(RepoMethod::Ppa),
         other => anyhow::bail!(
-            "unknown method '{}', expected: repofile, copr, baseurl, rpm, remote",
+            "unknown method '{}', expected: repofile, copr, baseurl, rpm, remote, ppa",
             other
         ),
     }
@@ -133,10 +134,11 @@ pub async fn autoremove(manager: &PackageManager) -> anyhow::Result<()> {
         }
     }
     eprintln!();
-    if !had_error {
-        let done = t!("cli.cleanup-complete");
-        eprintln!("  {}", done.green());
+    if had_error {
+        anyhow::bail!("one or more sources failed to autoremove");
     }
+    let done = t!("cli.cleanup-complete");
+    eprintln!("  {}", done.green());
     notify_daemon_recheck();
     Ok(())
 }
@@ -163,10 +165,11 @@ pub async fn update(
             }
         }
         eprintln!();
-        if !had_error {
-            let done = t!("cli.all-sources-updated");
-            eprintln!("  {}", done.green());
+        if had_error {
+            anyhow::bail!("one or more sources failed to update");
         }
+        let done = t!("cli.all-sources-updated");
+        eprintln!("  {}", done.green());
     } else if packages.len() == 1 && source_filter.is_none() {
         let pkg = &packages[0];
         let msg = t!("cli.updating-pkg", pkg = pkg);

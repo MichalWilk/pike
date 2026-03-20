@@ -2,7 +2,7 @@
 # All values shown below are defaults. Uncomment to override.
 
 [general]
-# Privilege escalation method for system package operations (dnf install/remove/update)
+# Privilege escalation method for system package operations (dnf/apt install/remove/update)
 # "auto" = sudo when TTY available, pkexec (GUI prompt) otherwise
 # "sudo" / "doas" = always use terminal prompt (fails without TTY)
 # "pkexec" = always use polkit GUI dialog
@@ -11,6 +11,7 @@
 [sources]
 # dnf = true
 # flatpak = true
+# apt = true
 
 [display]
 # Language: "auto" (detect from system), "en", or "pl"

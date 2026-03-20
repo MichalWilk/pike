@@ -1,8 +1,8 @@
 # Pike
 
-Unified package manager for Linux - wraps **dnf** and **flatpak** into a single CLI + interactive TUI. Built for tiling WM users (Hyprland / Sway) on Fedora.
+Unified package manager for Linux - wraps **dnf**, **apt**, and **flatpak** into a single CLI + interactive TUI. Built for tiling WM users (Hyprland / Sway) on Fedora, Debian, Ubuntu, and derivatives.
 
-- Install, remove, search, and update across dnf and flatpak with one command
+- Install, remove, search, and update across dnf, apt, and flatpak with one command
 - Background daemon with periodic update checks and desktop notifications
 - Interactive TUI with 6 tabs: Search, Installed, Updates, Repos, Settings, About
 - Waybar integration with push updates from daemon (no polling)
@@ -15,14 +15,34 @@ Unified package manager for Linux - wraps **dnf** and **flatpak** into a single 
 
 - **vs topgrade** - topgrade is an updater only (runs `dnf upgrade` / `flatpak update`). No install/remove/search, no TUI, no daemon, no Waybar widget, no repo management. Pike is a full package manager.
 - **vs GNOME Software / KDE Discover** - GUI apps tied to their desktop environment. Not keyboard-driven, not designed for tiling WM workflows, and GNOME Software can't manage dnf repos.
-- **vs using dnf + flatpak separately** - no unified search, no single install command, no combined update count in Waybar, no shared daemon. Two notification sources, two sets of commands to remember.
+- **vs using dnf/apt + flatpak separately** - no unified search, no single install command, no combined update count in Waybar, no shared daemon. Multiple notification sources, multiple sets of commands to remember.
 - **vs packagekit** - D-Bus abstraction layer with limited CLI. No TUI, no Waybar integration, no background daemon with push updates.
 
 ## Requirements
 
-Requires **dnf** and/or **flatpak** on the system (pre-installed on Fedora).
+Requires at least one of **dnf**, **apt**, or **flatpak** on the system. dnf and flatpak are pre-installed on Fedora; apt is pre-installed on Debian and Ubuntu. Pike auto-detects available backends at startup.
+
+The apt backend uses `apt-get`, `apt-cache`, and `dpkg-query` for maximum compatibility across Debian-based distributions.
 
 > **Fedora Atomic / Silverblue:** Pike requires a mutable dnf system. Fedora Atomic desktops (Silverblue, Kinoite, Sericea, Onyx) are not currently supported - they use `rpm-ostree` instead of `dnf5`. Flatpak-only mode would work in theory, but is untested.
+
+### Supported backends
+
+| Feature | dnf (Fedora 41+) | apt (Debian/Ubuntu) | flatpak |
+|---------|:-:|:-:|:-:|
+| search, install, remove | yes | yes | yes |
+| multi-package install/remove | yes | yes | yes |
+| update (single, multi, all) | yes | yes | yes |
+| check for updates | yes | yes | yes |
+| list installed | yes | yes | yes |
+| autoremove | yes | yes | yes |
+| purge (remove config/data) | - | yes | yes |
+| repo list | yes | yes | yes |
+| repo add | repofile, copr, baseurl, rpm | ppa, baseurl | remote |
+| repo enable/disable | yes | - | yes |
+| repo remove | - | yes | yes |
+
+The dnf backend requires `dnf5` (Fedora 41+). The apt backend uses `apt-get`, `apt-cache`, and `dpkg-query`, and supports both legacy `.list` and modern DEB822 `.sources` repo formats (Ubuntu 24.04+). Flatpak repo operations require a system D-Bus session.
 
 ## Install
 
@@ -85,12 +105,12 @@ See [Waybar Integration](#waybar-integration) below.
 ## Usage
 
 ```bash
-pike search firefox                # search across dnf + flatpak
+pike search firefox                # search across all enabled backends
 pike install firefox               # auto-detect source
-pike install firefox -S flatpak    # force source
+pike install firefox -S flatpak    # force source (dnf, apt, or flatpak)
 pike install vim git curl          # install multiple packages
 pike remove firefox
-pike remove firefox --purge        # also remove app data (flatpak)
+pike remove firefox --purge        # remove config files (apt) or app data (flatpak)
 pike remove vim git curl           # remove multiple packages
 pike update                        # update all packages
 pike update -S dnf                 # update all dnf packages only
@@ -103,7 +123,7 @@ pike check --notify-always         # check + notify regardless of result
 pike check --waybar                # check + output waybar JSON
 pike list                          # list all installed packages
 pike list --updates                # show cached updates
-pike status                        # "3 updates (2 dnf · 1 flatpak)"
+pike status                        # "3 updates (2 dnf · 1 flatpak)" (or apt, etc.)
 pike status --waybar               # JSON for waybar custom module
 pike status --notify               # send desktop notification if updates exist
 pike status --notify-always        # send desktop notification regardless of result
@@ -112,7 +132,7 @@ pike waybar                        # continuous waybar output (requires daemon)
 pike tui                           # interactive terminal UI
 ```
 
-**Source auto-detection:** when no `-S` flag is given, pike searches all enabled sources in parallel. If the package is found in exactly one source, that source is used. If found in multiple sources, pike returns an error asking you to specify with `-S dnf` or `-S flatpak`. There is no implicit priority between sources.
+**Source auto-detection:** when no `-S` flag is given, pike searches all enabled sources in parallel. If the package is found in exactly one source, that source is used. If found in multiple sources, pike returns an error asking you to specify with `-S dnf`, `-S apt`, or `-S flatpak`. There is no implicit priority between sources.
 
 Most commands have short aliases: `s` (search), `i` (install), `rm` (remove), `up` (update), `ar` (autoremove), `ck` (check), `ls` (list), `st` (status), `ui` (tui).
 
@@ -129,10 +149,12 @@ pike repo add _ kwizart/fedy -S dnf -m copr                       # COPR
 pike repo add myrepo https://example.com/repo -S dnf -m baseurl   # base URL with name
 pike repo add _ https://example.com/pkg.rpm -S dnf -m rpm         # RPM package
 pike repo add _ https://example.com/repo.repo -S dnf --repo-id custom-id  # custom repo ID
+pike repo add _ ppa:user/repo -S apt -m ppa                       # PPA (via add-apt-repository)
+pike repo add _ https://example.com/sources.list -S apt -m baseurl  # base URL (via add-apt-repository)
 pike repo remove flathub-beta -S flatpak
 ```
 
-`repo add` requires `--source` (`-S`) -source is never auto-detected. DNF supports four methods: `repofile` (default), `copr`, `baseurl`, `rpm` -select with `--method` (`-m`). For `repofile` and `baseurl`, use `--repo-id` to set a custom repository ID.
+`repo add` requires `--source` (`-S`) -source is never auto-detected. DNF supports four methods: `repofile` (default), `copr`, `baseurl`, `rpm` -select with `--method` (`-m`). For `repofile` and `baseurl`, use `--repo-id` to set a custom repository ID. Apt supports `ppa` (default) and `baseurl` methods, both using `add-apt-repository` under the hood.
 
 Global flags: `--json` (machine-readable output), `--verbose` (debug logging).
 
@@ -155,7 +177,7 @@ The repo add wizard (`a` on Repos tab) guides through source selection, then met
 
 ## Configuration
 
-`~/.config/pike/config.toml` -created with defaults on first run, editable manually or via TUI Settings tab. Sources are auto-detected: each is enabled only if its binary (`dnf`, `flatpak`) is found on the system.
+`~/.config/pike/config.toml` -created with defaults on first run, editable manually or via TUI Settings tab. Sources are auto-detected: each is enabled only if its binary (`dnf`, `apt-get`, `flatpak`) is found on the system.
 
 ```toml
 [general]
@@ -163,6 +185,7 @@ The repo add wizard (`a` on Repos tab) guides through source selection, then met
 
 [sources]
 # dnf = true
+# apt = true
 # flatpak = true
 
 [display]
@@ -170,6 +193,7 @@ The repo add wizard (`a` on Repos tab) guides through source selection, then met
 
 [display.architectures]
 # dnf = ["x86_64", "noarch"]
+# apt = ["amd64"]
 
 [logging]
 # file = true
@@ -183,7 +207,7 @@ See [`config.example.toml`](config.example.toml) for full documentation. Changes
 
 ### Privilege escalation
 
-dnf operations (`install`, `remove`, `update`, `autoremove`, repo management) require root. Pike escalates privileges using a configurable method:
+dnf and apt operations (`install`, `remove`, `update`, `autoremove`, repo management) require root. Pike escalates privileges using a configurable method:
 
 | Method | Behavior |
 |--------|----------|
@@ -314,6 +338,28 @@ language = "auto"  # "auto", "en", or "pl"
 
 **Not translated** (by design): clap `--help` text, `pike-core` error messages (library crate, no i18n dependency), waybar JSON keys/classes (machine-readable).
 
+## Development
+
+Requires Rust 1.85+. Optionally install [just](https://github.com/casey/just) for convenience recipes.
+
+```bash
+just check               # fmt + clippy + unit tests
+just build                # debug build
+just release              # release build
+```
+
+### Integration tests
+
+Integration tests run pike inside Podman containers (Fedora for dnf, Ubuntu for apt). Each backend is tested for search, list, check, status, waybar, repo management, install/remove (single and multi-package), purge, update (single, multi, all), and autoremove.
+
+```bash
+just test-integration     # run all backends (dnf + apt)
+just test-dnf             # run dnf tests only
+just test-apt             # run apt tests only
+```
+
+Requires [Podman](https://podman.io/) (or Docker via `CONTAINER_RUNTIME=docker just test-integration`).
+
 ## Roadmap
 
 ### Coming next
@@ -326,7 +372,6 @@ language = "auto"  # "auto", "en", or "pl"
 - rpm-ostree / Fedora Atomic support
 - pipx backend
 - Homebrew backend
-- apt backend (non-Fedora distros)
 
 ### Won't do
 

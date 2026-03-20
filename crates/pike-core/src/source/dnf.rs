@@ -162,7 +162,7 @@ impl PackageSource for DnfSource {
                 let arg = format!("--from-repofile={url}");
                 dnf_addrepo(&arg, repo_id, name, gpgcheck).await
             }
-            RepoMethod::Copr => run_privileged(&["dnf5", "copr", "enable", url]).await,
+            RepoMethod::Copr => run_privileged(&["dnf5", "copr", "enable", "-y", url]).await,
             RepoMethod::BaseUrl => {
                 let arg = format!("--set=baseurl={url}");
                 dnf_addrepo(&arg, repo_id, name, gpgcheck).await
