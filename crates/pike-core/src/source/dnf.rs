@@ -439,7 +439,10 @@ mod tests {
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0].key_id, "0xABCD1234");
         assert_eq!(keys[0].user_id, "Fedora <fedora@example.com>");
-        assert_eq!(keys[0].fingerprint, "1111222233334444555566667777888899990000");
+        assert_eq!(
+            keys[0].fingerprint,
+            "1111222233334444555566667777888899990000"
+        );
     }
 
     #[test]
