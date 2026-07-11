@@ -448,6 +448,16 @@ pub fn validate_repo_input(
     Ok(())
 }
 
+async fn binary_exists(name: &str) -> bool {
+    tokio::process::Command::new("which")
+        .arg(name)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await
+        .is_ok_and(|s| s.success())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,14 +509,4 @@ mod tests {
         let result = validate_repo_input(RepoMethod::Ppa, "", "", "user/");
         assert!(result.is_err());
     }
-}
-
-async fn binary_exists(name: &str) -> bool {
-    tokio::process::Command::new("which")
-        .arg(name)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .is_ok_and(|s| s.success())
 }
