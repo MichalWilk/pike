@@ -19,6 +19,13 @@ pub fn set_privilege_method(method: PrivilegeEscalation) {
 
 pub type Result<T> = std::result::Result<T, PikeError>;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingGpgKey {
+    pub key_id: String,
+    pub user_id: String,
+    pub fingerprint: String,
+}
+
 #[async_trait]
 pub trait PackageSource: Send + Sync {
     fn name(&self) -> &str;
@@ -88,6 +95,14 @@ pub trait PackageSource: Send + Sync {
             self.name()
         )))
     }
+
+    async fn refresh_preflight(&self) -> Result<Vec<PendingGpgKey>> {
+        Ok(Vec::new())
+    }
+
+    async fn import_keys(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub fn create_sources(active: &[SourceType]) -> Vec<Box<dyn PackageSource>> {
@@ -136,6 +151,7 @@ pub async fn run_captured_allow_exit(
     tracing::debug!("exec: {}", format_cmd(cmd, args));
     let output = tokio::process::Command::new(cmd)
         .args(args)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()?
@@ -150,6 +166,19 @@ pub async fn run_captured_allow_exit(
         });
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+pub async fn run_captured_stderr(cmd: &str, args: &[&str]) -> Result<String> {
+    tracing::debug!("exec: {}", format_cmd(cmd, args));
+    let output = tokio::process::Command::new(cmd)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?
+        .wait_with_output()
+        .await?;
+    Ok(String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
 pub async fn run_interactive(cmd: &str, args: &[&str]) -> Result<()> {

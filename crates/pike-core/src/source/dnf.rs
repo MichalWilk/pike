@@ -3,8 +3,8 @@ use async_trait::async_trait;
 use crate::error::PikeError;
 use crate::package::{Package, PackageUpdate, RepoMethod, Repository, SourceType};
 use crate::source::{
-    PackageSource, Result, parse_installed_versions, run_captured, run_captured_allow_exit,
-    run_privileged,
+    PackageSource, PendingGpgKey, Result, parse_installed_versions, run_captured,
+    run_captured_allow_exit, run_captured_stderr, run_interactive, run_privileged,
 };
 
 fn version_key(name: &str, arch: Option<&str>) -> String {
@@ -118,6 +118,15 @@ impl PackageSource for DnfSource {
         let refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
         args.extend_from_slice(&refs);
         run_privileged(&args).await
+    }
+
+    async fn refresh_preflight(&self) -> Result<Vec<PendingGpgKey>> {
+        let stderr = run_captured_stderr("dnf5", &["check-upgrade", "-q"]).await?;
+        Ok(parse_pending_gpg_keys(&stderr))
+    }
+
+    async fn import_keys(&self) -> Result<()> {
+        run_interactive("dnf5", &["makecache", "--refresh"]).await
     }
 
     async fn update_all(&self) -> Result<()> {
@@ -313,6 +322,36 @@ pub(crate) fn parse_repo_list_json(output: &str) -> Result<Vec<Repository>> {
     Ok(result)
 }
 
+pub(crate) fn parse_pending_gpg_keys(stderr: &str) -> Vec<PendingGpgKey> {
+    let mut keys = Vec::new();
+    let mut key_id: Option<String> = None;
+    let mut user_id: Option<String> = None;
+
+    for line in stderr.lines() {
+        let line = line.trim();
+        if let Some(idx) = line.find("Importing OpenPGP key") {
+            let rest = &line[idx + "Importing OpenPGP key".len()..];
+            key_id = Some(rest.trim().trim_end_matches(':').trim().to_string());
+            user_id = None;
+        } else if line.starts_with("UserID")
+            && let (Some(start), Some(end)) = (line.find('"'), line.rfind('"'))
+            && end > start
+        {
+            user_id = Some(line[start + 1..end].to_string());
+        } else if line.starts_with("Fingerprint")
+            && let (Some(id), Some((_, fp))) = (key_id.take(), line.split_once(':'))
+        {
+            keys.push(PendingGpgKey {
+                key_id: id,
+                user_id: user_id.take().unwrap_or_default(),
+                fingerprint: fp.trim().to_string(),
+            });
+        }
+    }
+
+    keys
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +402,55 @@ mod tests {
     fn test_parse_empty() {
         assert!(parse_search_output("").is_empty());
         assert!(parse_check_upgrade_output("").is_empty());
+    }
+
+    const DNF_GPG_PROMPT_STDERR: &str = "Importing OpenPGP key 0xDE226D6F:\n UserID     : \"Terra 44 <security@fyralabs.com>\"\n Fingerprint: AE09157A4DE88B497EA1D5D300CDAB43DE226D6F\n From       : file:///etc/pki/rpm-gpg/RPM-GPG-KEY-terra44\nIs this ok [y/N]: Importing OpenPGP key 0x2FFEB650:\n UserID     : \"Terra 44 - Mesa <security@fyralabs.com>\"\n Fingerprint: BED73E7D401960C590E45D957A3DC3E02FFEB650\n From       : file:///etc/pki/rpm-gpg/RPM-GPG-KEY-terra44-mesa\nIs this ok [y/N]: ";
+
+    #[test]
+    fn test_parse_pending_gpg_keys() {
+        let keys = parse_pending_gpg_keys(DNF_GPG_PROMPT_STDERR);
+        assert_eq!(keys.len(), 2);
+
+        assert_eq!(keys[0].key_id, "0xDE226D6F");
+        assert_eq!(keys[0].user_id, "Terra 44 <security@fyralabs.com>");
+        assert_eq!(
+            keys[0].fingerprint,
+            "AE09157A4DE88B497EA1D5D300CDAB43DE226D6F"
+        );
+
+        assert_eq!(keys[1].key_id, "0x2FFEB650");
+        assert_eq!(keys[1].user_id, "Terra 44 - Mesa <security@fyralabs.com>");
+        assert_eq!(
+            keys[1].fingerprint,
+            "BED73E7D401960C590E45D957A3DC3E02FFEB650"
+        );
+    }
+
+    #[test]
+    fn test_parse_pending_gpg_keys_none() {
+        assert!(parse_pending_gpg_keys("").is_empty());
+        assert!(parse_pending_gpg_keys(" bash.x86_64  5.2.38-1.fc43  updates\n").is_empty());
+    }
+
+    #[test]
+    fn test_parse_pending_gpg_keys_single() {
+        let stderr = "Importing OpenPGP key 0xABCD1234:\n UserID     : \"Fedora <fedora@example.com>\"\n Fingerprint: 1111222233334444555566667777888899990000\n From       : file:///etc/pki/rpm-gpg/RPM-GPG-KEY-fedora\nIs this ok [y/N]: ";
+        let keys = parse_pending_gpg_keys(stderr);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].key_id, "0xABCD1234");
+        assert_eq!(keys[0].user_id, "Fedora <fedora@example.com>");
+        assert_eq!(keys[0].fingerprint, "1111222233334444555566667777888899990000");
+    }
+
+    #[test]
+    fn test_parse_pending_gpg_keys_missing_userid() {
+        let stderr =
+            "Importing OpenPGP key 0xDEADBEEF:\n Fingerprint: AAAABBBBCCCCDDDD\nIs this ok [y/N]: ";
+        let keys = parse_pending_gpg_keys(stderr);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].key_id, "0xDEADBEEF");
+        assert_eq!(keys[0].user_id, "");
+        assert_eq!(keys[0].fingerprint, "AAAABBBBCCCCDDDD");
     }
 
     const DNF_LIST_INSTALLED_OUTPUT: &str = "bash.x86_64\t5.2.37-3.fc43\tThe GNU Bourne Again shell\nvim-enhanced.x86_64\t9.1.900-1.fc43\tA version of the VIM editor\n";

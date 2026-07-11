@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::db::Database;
 use crate::error::PikeError;
 use crate::package::{Package, PackageUpdate, RepoMethod, Repository, SourceType, StatusSummary};
-use crate::source::{PackageSource, create_sources};
+use crate::source::{PackageSource, PendingGpgKey, create_sources};
 use crate::util::{filter_and_sort_packages, gather, sort_by_source};
 
 pub struct PackageManager {
@@ -167,6 +167,22 @@ impl PackageManager {
         self.db.replace_cache(&updates)?;
 
         Ok(updates)
+    }
+
+    pub async fn refresh_preflight(&self) -> Vec<(SourceType, Vec<PendingGpgKey>)> {
+        let mut pending = Vec::new();
+        for source in &self.sources {
+            match source.refresh_preflight().await {
+                Ok(keys) if !keys.is_empty() => pending.push((source.source_type(), keys)),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("refresh_preflight {} failed: {}", source.name(), e),
+            }
+        }
+        pending
+    }
+
+    pub async fn import_keys(&self, source: SourceType) -> Result<(), PikeError> {
+        self.get_source(source)?.import_keys().await
     }
 
     pub async fn list_installed(

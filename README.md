@@ -134,6 +134,8 @@ pike tui                           # interactive terminal UI
 
 **Source auto-detection:** when no `-S` flag is given, pike searches all enabled sources in parallel. If the package is found in exactly one source, that source is used. If found in multiple sources, pike returns an error asking you to specify with `-S dnf`, `-S apt`, or `-S flatpak`. There is no implicit priority between sources.
 
+**GPG key import:** after a distribution upgrade or when a new repository is added, dnf may need to import new signing keys before it can refresh metadata. When run from a terminal, `pike check` detects the pending keys, lists them, and asks whether to import them (approval happens in dnf's own interactive prompt). When declined, or run non-interactively (daemon, `--waybar`, `--json`), pike never blocks: it skips the affected repositories and the daemon logs a reminder to run `pike check` in a terminal.
+
 Most commands have short aliases: `s` (search), `i` (install), `rm` (remove), `up` (update), `ar` (autoremove), `ck` (check), `ls` (list), `st` (status), `ui` (tui).
 
 ### Repository management

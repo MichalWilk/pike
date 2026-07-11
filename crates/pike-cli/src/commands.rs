@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, IsTerminal, Write};
 
 use owo_colors::OwoColorize;
 use pike_core::config::IconStyle;
@@ -190,6 +190,40 @@ pub async fn update(
     Ok(())
 }
 
+fn prompt_yes_no(question: &str) -> anyhow::Result<bool> {
+    eprint!("{question} [y/N]: ");
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    std::io::stdin().lock().read_line(&mut line)?;
+    Ok(matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
+}
+
+async fn handle_pending_gpg_keys(manager: &PackageManager) -> anyhow::Result<()> {
+    for (source, keys) in manager.refresh_preflight().await {
+        eprintln!(
+            "{}",
+            t!("cli.gpg-keys-pending", source = source.display_name()).yellow()
+        );
+        for key in &keys {
+            eprintln!(
+                "{}",
+                t!(
+                    "cli.gpg-key-line",
+                    key_id = key.key_id,
+                    user_id = key.user_id
+                )
+            );
+        }
+        if prompt_yes_no(&t!("cli.gpg-import-prompt"))? {
+            manager.import_keys(source).await?;
+        } else {
+            eprintln!("  {}", t!("cli.gpg-import-skipped").dimmed());
+        }
+        eprintln!();
+    }
+    Ok(())
+}
+
 pub async fn check(
     manager: &PackageManager,
     json: bool,
@@ -207,6 +241,10 @@ pub async fn check(
         } else if let Some(err) = resp.error {
             tracing::warn!("daemon check failed: {err}");
         }
+    }
+
+    if !json && !waybar && std::io::stdin().is_terminal() {
+        handle_pending_gpg_keys(manager).await?;
     }
 
     if !json && !waybar {

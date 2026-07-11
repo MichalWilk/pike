@@ -84,6 +84,16 @@ async fn run_check(
     notify: bool,
     notify_always: bool,
 ) -> anyhow::Result<StatusSummary> {
+    for (source, _keys) in state.manager.refresh_preflight().await {
+        tracing::warn!(
+            "{}",
+            t!(
+                "cli.gpg-keys-pending-daemon",
+                source = source.display_name()
+            )
+        );
+    }
+
     let updates = state.manager.check_updates().await?;
     let status = StatusSummary::from_fresh_check(updates);
 
