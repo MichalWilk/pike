@@ -2,7 +2,7 @@ use async_trait::async_trait;
 
 use crate::package::{Package, PackageUpdate, RepoMethod, Repository, SourceType};
 use crate::source::{
-    PackageSource, Result, parse_installed_versions, run_captured, run_interactive,
+    PackageSource, Result, parse_installed_versions, run_captured, run_interactive, run_privileged,
 };
 
 #[derive(Default)]
@@ -149,7 +149,7 @@ impl PackageSource for FlatpakSource {
 
     async fn set_repo_enabled(&self, id: &str, enabled: bool) -> Result<()> {
         let flag = if enabled { "--enable" } else { "--disable" };
-        run_interactive("flatpak", &["remote-modify", flag, id]).await
+        self.run_remote_op("remote-modify", id, &[flag, id]).await
     }
 
     async fn add_repo(
@@ -162,7 +162,15 @@ impl PackageSource for FlatpakSource {
     ) -> Result<()> {
         match method {
             RepoMethod::RemoteAdd => {
-                run_interactive("flatpak", &["remote-add", "--if-not-exists", name, url]).await
+                run_privileged(&[
+                    "flatpak",
+                    "remote-add",
+                    "--system",
+                    "--if-not-exists",
+                    name,
+                    url,
+                ])
+                .await
             }
             _ => Err(crate::error::PikeError::Other(format!(
                 "flatpak does not support {} method",
@@ -172,11 +180,28 @@ impl PackageSource for FlatpakSource {
     }
 
     async fn remove_repo(&self, id: &str) -> Result<()> {
-        run_interactive("flatpak", &["remote-delete", id]).await
+        self.run_remote_op("remote-delete", id, &[id]).await
     }
 }
 
 impl FlatpakSource {
+    async fn run_remote_op(&self, subcommand: &str, id: &str, args: &[&str]) -> Result<()> {
+        let user_remotes = run_captured(
+            "flatpak",
+            &["remotes", "--user", "--show-disabled", "--columns=name"],
+        )
+        .await?;
+        if contains_remote(&user_remotes, id) {
+            let mut full = vec![subcommand, "--user"];
+            full.extend_from_slice(args);
+            run_interactive("flatpak", &full).await
+        } else {
+            let mut full = vec!["flatpak", subcommand, "--system"];
+            full.extend_from_slice(args);
+            run_privileged(&full).await
+        }
+    }
+
     async fn resolve_app_id(&self, package: &str) -> Result<String> {
         if package.contains('.') {
             return Ok(package.to_string());
@@ -242,6 +267,10 @@ pub(crate) fn parse_list_installed_output(output: &str) -> Vec<Package> {
         arch: non_empty(f[3]),
         description: f.get(4).and_then(|s| non_empty(s)),
     })
+}
+
+fn contains_remote(output: &str, id: &str) -> bool {
+    output.lines().any(|line| line.trim() == id)
 }
 
 pub(crate) fn parse_remotes_output(output: &str) -> Vec<Repository> {
@@ -384,5 +413,13 @@ mod tests {
     #[test]
     fn test_parse_remotes_empty() {
         assert!(parse_remotes_output("").is_empty());
+    }
+
+    #[test]
+    fn test_contains_remote() {
+        let output = "claude-origin\npike-test\n";
+        assert!(contains_remote(output, "pike-test"));
+        assert!(!contains_remote(output, "flathub"));
+        assert!(!contains_remote("", "flathub"));
     }
 }

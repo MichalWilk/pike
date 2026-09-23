@@ -218,7 +218,7 @@ dnf and apt operations (`install`, `remove`, `update`, `autoremove`, repo manage
 | `pkexec` | Always uses `pkexec` (polkit GUI password prompt). Works without a TTY. |
 | `doas` | Always uses `doas` (OpenBSD sudo alternative). Fails without a TTY. |
 
-flatpak operations run as the current user and do not require privilege escalation.
+flatpak package operations run as the current user and do not require privilege escalation. Managing system-wide flatpak remotes (add, remove, enable/disable) uses the same escalation method; user remotes (`--user`) are managed without it.
 
 Set in config:
 
