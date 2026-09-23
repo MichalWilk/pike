@@ -42,27 +42,27 @@ pub(super) async fn handle_action(
         Action::InstallPackage(pkg, source) => {
             install_package(terminal, app, manager, &pkg, source).await?;
             app.installed.loaded = false;
-            notify_daemon_recheck();
+            spawn_daemon_recheck();
         }
         Action::RemovePackage(pkg, source) => {
             remove_package(terminal, app, manager, &pkg, source).await?;
             app.installed.loaded = false;
-            notify_daemon_recheck();
+            spawn_daemon_recheck();
         }
         Action::UpdatePackage(pkg, source) => {
             update_package(terminal, manager, &pkg, source).await?;
             spawn_check_updates(app, tx, active_sources);
-            notify_daemon_recheck();
+            spawn_daemon_recheck();
         }
         Action::UpdateAll(pkgs) => {
             update_all(terminal, manager, &pkgs).await?;
             spawn_check_updates(app, tx, active_sources);
-            notify_daemon_recheck();
+            spawn_daemon_recheck();
         }
         Action::Autoremove => {
             autoremove(terminal, app, manager).await?;
             app.installed.loaded = false;
-            notify_daemon_recheck();
+            spawn_daemon_recheck();
         }
         Action::RefreshRepos => {
             spawn_list_repos(app, tx, active_sources);
@@ -94,6 +94,10 @@ pub(super) async fn handle_action(
         }
     }
     Ok(())
+}
+
+fn spawn_daemon_recheck() {
+    std::thread::spawn(notify_daemon_recheck);
 }
 
 async fn install_package(
