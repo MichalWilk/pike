@@ -1,5 +1,7 @@
 pub(crate) mod about;
 mod chrome;
+mod cleanup;
+mod confirm;
 mod installed;
 mod repos;
 mod search;
@@ -77,6 +79,7 @@ pub(crate) fn render(frame: &mut Frame, app: &App, view: &mut ViewState, hit: &m
         Tab::Installed => installed::render_installed(frame, app, view, hit, content_area),
         Tab::Updates => updates::render_updates(frame, app, view, hit, content_area),
         Tab::Repos => repos::render_repos(frame, app, view, hit, content_area),
+        Tab::Cleanup => cleanup::render_cleanup(frame, app, view, hit, content_area),
         Tab::Settings => settings::render_settings(frame, app, view, hit, content_area),
         Tab::About => {
             let selected = view.about_table.selected().unwrap_or(0);
@@ -90,6 +93,11 @@ pub(crate) fn render(frame: &mut Frame, app: &App, view: &mut ViewState, hit: &m
     );
 
     chrome::render_footer(frame, app, view, hit, footer_area);
+
+    if let Some(pending) = &app.pending_confirm {
+        let modal = confirm::render_confirm(frame, pending, view);
+        hit.click_targets.retain(|t| !t.rect.intersects(modal));
+    }
 }
 
 pub(super) fn borderless_block() -> Block<'static> {
@@ -301,4 +309,44 @@ pub(super) fn render_table_widget(
         .row_highlight_style(Style::default().bg(SELECTED_BG).fg(SELECTED_FG))
         .block(borderless_block());
     frame.render_stateful_widget(table, area, state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyCode;
+    use pike_core::config::Config;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::tui::types::{Action, ClickAction, PendingConfirm};
+
+    fn footer_keys(width: u16, height: u16) -> Vec<KeyCode> {
+        let mut app = App::new(Config::default(), Vec::new(), vec![SourceType::Dnf]);
+        app.pending_confirm = Some(PendingConfirm {
+            action: Action::InstallPackage("htop".into(), None),
+            title: "Install htop?".into(),
+            lines: vec!["Source: dnf".into(); 5],
+            preview: None,
+        });
+        let mut view = ViewState::new(false);
+        let mut hit = HitState::default();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render(frame, &app, &mut view, &mut hit))
+            .unwrap();
+        hit.click_targets
+            .iter()
+            .filter_map(|t| match t.action {
+                ClickAction::Key(code) => Some(code),
+                ClickAction::SwitchTab(_) => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_modal_footer_buttons_clickable_only_when_visible() {
+        assert_eq!(footer_keys(80, 24), [KeyCode::Enter, KeyCode::Esc]);
+        assert!(footer_keys(40, 6).is_empty());
+    }
 }

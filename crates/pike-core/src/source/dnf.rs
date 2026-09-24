@@ -1,11 +1,28 @@
 use async_trait::async_trait;
 
+use crate::cleanup::{
+    cache_item, of_kind, old_kernel_items, preview_removal, removal_list, remove_and_clean_cache,
+    running_kernel,
+};
 use crate::error::PikeError;
-use crate::package::{Package, PackageUpdate, RepoMethod, Repository, SourceType};
+use crate::package::{
+    CleanupItem, CleanupKind, Package, PackageUpdate, RepoMethod, Repository, SourceType,
+};
 use crate::source::{
     PackageSource, PendingGpgKey, Result, parse_installed_versions, run_captured,
     run_captured_allow_exit, run_captured_stderr, run_interactive, run_privileged,
 };
+
+const DNF_CACHE_DIR: &str = "/var/cache/libdnf5";
+const KERNEL_PACKAGES: [&str; 7] = [
+    "kernel",
+    "kernel-core",
+    "kernel-modules",
+    "kernel-modules-core",
+    "kernel-modules-extra",
+    "kernel-modules-internal",
+    "kernel-devel",
+];
 
 fn version_key(name: &str, arch: Option<&str>) -> String {
     match arch {
@@ -78,10 +95,6 @@ impl PackageSource for DnfSource {
         let refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
         args.extend_from_slice(&refs);
         run_privileged(&args).await
-    }
-
-    async fn autoremove(&self) -> Result<()> {
-        run_privileged(&["dnf5", "autoremove", "-y"]).await
     }
 
     async fn check_updates(&self) -> Result<Vec<PackageUpdate>> {
@@ -183,6 +196,108 @@ impl PackageSource for DnfSource {
             ))),
         }
     }
+
+    async fn list_cleanup(
+        &self,
+        kinds: &[CleanupKind],
+        keep_kernels: usize,
+    ) -> Result<Vec<CleanupItem>> {
+        let mut items = Vec::new();
+        let orphans = kinds.contains(&CleanupKind::Orphan);
+        let kernels = kinds.contains(&CleanupKind::OldKernel);
+        if orphans || kernels {
+            let kernel_output = query_kernel_packages().await?;
+            if orphans {
+                let unneeded = run_captured(
+                    "dnf5",
+                    &[
+                        "repoquery",
+                        "--unneeded",
+                        "--queryformat=%{name}.%{arch}\t%{version}-%{release}\t%{installsize}\n",
+                    ],
+                )
+                .await?;
+                items.extend(parse_unneeded_output(
+                    &unneeded,
+                    &installonly_names(&kernel_output),
+                ));
+            }
+            if kernels {
+                items.extend(old_kernel_items(
+                    kernel_versions(&parse_kernel_packages(&kernel_output)),
+                    running_kernel().as_deref(),
+                    keep_kernels,
+                    SourceType::Dnf,
+                    |_| "kernel".to_string(),
+                ));
+            }
+        }
+        if kinds.contains(&CleanupKind::Cache) {
+            items.extend(cache_item(SourceType::Dnf, DNF_CACHE_DIR).await);
+        }
+        Ok(items)
+    }
+
+    async fn clean(&self, items: &[CleanupItem]) -> Result<()> {
+        let packages = removal_packages(items).await?;
+        remove_and_clean_cache(
+            items,
+            &packages,
+            &["dnf5", "remove", "-y"],
+            &["dnf5", "clean", "all"],
+        )
+        .await
+    }
+
+    async fn preview_clean(&self, items: &[CleanupItem]) -> Result<Vec<String>> {
+        preview_removal(
+            SourceType::Dnf,
+            &removal_packages(items).await?,
+            "dnf5",
+            &["remove", "--assumeno"],
+            &[1],
+            parse_remove_preview,
+        )
+        .await
+    }
+}
+
+async fn removal_packages(items: &[CleanupItem]) -> Result<Vec<String>> {
+    let orphans = of_kind(items, CleanupKind::Orphan)
+        .map(|i| orphan_nevra(&i.name, &i.version))
+        .collect();
+    let versions: Vec<&str> = of_kind(items, CleanupKind::OldKernel)
+        .map(|i| i.version.as_str())
+        .collect();
+    let mut kernel_pkgs = Vec::new();
+    if !versions.is_empty() {
+        let output = query_kernel_packages().await?;
+        let rows = parse_kernel_packages(&output);
+        kernel_pkgs = versions
+            .into_iter()
+            .flat_map(|v| kernel_packages_for(&rows, v))
+            .collect();
+    }
+    Ok(removal_list(
+        orphans,
+        kernel_pkgs,
+        running_kernel().as_deref(),
+    ))
+}
+
+async fn query_kernel_packages() -> Result<String> {
+    run_captured_allow_exit(
+        "rpm",
+        &[
+            "-q",
+            "--whatprovides",
+            "installonlypkg(kernel)",
+            "installonlypkg(kernel-module)",
+            "--queryformat=%{NAME}\t%{VERSION}-%{RELEASE}.%{ARCH}\t%{SIZE}\n",
+        ],
+        &[1, 2],
+    )
+    .await
 }
 
 async fn dnf_addrepo(url_arg: &str, repo_id: &str, name: &str, gpgcheck: bool) -> Result<()> {
@@ -322,6 +437,118 @@ pub(crate) fn parse_repo_list_json(output: &str) -> Result<Vec<Repository>> {
     Ok(result)
 }
 
+/// Kernel packages are never orphans here: they are handled per kernel version.
+pub(crate) fn parse_unneeded_output(output: &str, installonly: &[&str]) -> Vec<CleanupItem> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let name = fields.next()?.trim();
+            let version = fields.next()?.trim();
+            let base = name.rsplit_once('.').map_or(name, |(n, _)| n);
+            if name.is_empty() || KERNEL_PACKAGES.contains(&base) || installonly.contains(&base) {
+                return None;
+            }
+            let size = fields.next().and_then(|s| s.trim().parse().ok());
+            Some(CleanupItem {
+                source: SourceType::Dnf,
+                kind: CleanupKind::Orphan,
+                name: name.to_string(),
+                version: version.to_string(),
+                size,
+                arch: None,
+            })
+        })
+        .collect()
+}
+
+/// Full NEVRA, so an installonly package loses only this version.
+pub(crate) fn orphan_nevra(name: &str, version: &str) -> String {
+    match name.rsplit_once('.') {
+        Some((base, arch)) if !version.is_empty() => format!("{base}-{version}.{arch}"),
+        _ => name.to_string(),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct KernelPackage<'a> {
+    name: &'a str,
+    version: &'a str,
+    size: Option<u64>,
+}
+
+pub(crate) fn parse_kernel_packages(output: &str) -> Vec<KernelPackage<'_>> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(3, '\t');
+            let name = fields.next()?;
+            let version = fields.next()?;
+            KERNEL_PACKAGES.contains(&name).then(|| KernelPackage {
+                name,
+                version,
+                size: fields.next().and_then(|s| s.trim().parse().ok()),
+            })
+        })
+        .collect()
+}
+
+fn installonly_names(output: &str) -> Vec<&str> {
+    output
+        .lines()
+        .filter_map(|line| line.split_once('\t').map(|(name, _)| name))
+        .collect()
+}
+
+pub(crate) fn parse_remove_preview(output: &str) -> Vec<String> {
+    let mut in_removal = false;
+    let mut removed = Vec::new();
+    for line in output.lines() {
+        if !line.starts_with(' ') {
+            let header = line.trim_end();
+            if header.ends_with(':') {
+                in_removal = matches!(
+                    header,
+                    "Removing:" | "Removing dependent packages:" | "Removing unused dependencies:"
+                );
+            }
+            continue;
+        }
+        if !in_removal {
+            continue;
+        }
+        let mut fields = line.split_whitespace();
+        let (Some(name), Some(arch), Some(evr)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let vr = evr.split_once(':').map_or(evr, |(_, vr)| vr);
+        removed.push(format!("{name}-{vr}.{arch}"));
+    }
+    removed
+}
+
+pub(crate) fn kernel_versions(rows: &[KernelPackage]) -> Vec<(String, Option<u64>)> {
+    rows.iter()
+        .filter(|r| r.name == "kernel-core")
+        .map(|core| {
+            let size = rows
+                .iter()
+                .filter(|r| r.version == core.version)
+                .filter_map(|r| r.size)
+                .reduce(|a, b| a + b);
+            (core.version.to_string(), size)
+        })
+        .collect()
+}
+
+pub(crate) fn kernel_packages_for(rows: &[KernelPackage], version: &str) -> Vec<String> {
+    rows.iter()
+        .filter(|r| r.version == version)
+        .map(|r| format!("{}-{}", r.name, r.version))
+        .collect()
+}
+
 pub(crate) fn parse_pending_gpg_keys(stderr: &str) -> Vec<PendingGpgKey> {
     let mut keys = Vec::new();
     let mut key_id: Option<String> = None;
@@ -355,6 +582,7 @@ pub(crate) fn parse_pending_gpg_keys(stderr: &str) -> Vec<PendingGpgKey> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cleanup::extra_removals;
 
     const DNF_SEARCH_OUTPUT: &str = "Updating and loading repositories:\nRepositories loaded.\nMatched fields: name (exact)\n lan-mouse.aarch64\tSoftware KVM Switch / mouse & keyboard sharing software\n lan-mouse.x86_64\tSoftware KVM Switch / mouse & keyboard sharing software\nMatched fields: name, summary\n lan-mouse-debuginfo.x86_64\tDebug information for package lan-mouse\n";
 
@@ -562,5 +790,120 @@ mod tests {
         assert_eq!(packages[0].name, "python3.11");
         assert_eq!(packages[0].arch.as_deref(), Some("x86_64"));
         assert_eq!(packages[0].version, "3.11.11-1.fc43");
+    }
+
+    const DNF_UNNEEDED_OUTPUT: &str = "libfoo.x86_64\t1.2-3.fc44\t1258291\npython3-bar.noarch\t0.4-1.fc44\t348160\nkernel-devel.x86_64\t7.2.5-200.fc44\t70000000\nkernelshark.x86_64\t2.3-1.fc44\t5000\nkernel-core.x86_64\t7.2.5-200.fc44\t106627293\nkernel-debug-core.x86_64\t7.2.5-200.fc44\t90000000\n";
+
+    const RPM_KERNEL_PACKAGES: &str = "kernel-modules-core\t7.2.5-200.fc44.x86_64\t77444095\nkernel-core\t7.2.5-200.fc44.x86_64\t106627293\nkernel-modules\t7.2.5-200.fc44.x86_64\t105470864\nkernel\t7.2.5-200.fc44.x86_64\t0\nkernel-debug-core\t7.2.5-200.fc44.x86_64\t90000000\nkernel-core\t7.2.50-200.fc44.x86_64\t1\nkernel-core\t7.2.6-200.fc44.x86_64\t106655508\nkernel\t7.2.6-200.fc44.x86_64\t0\nkernel-devel\t7.2.5-200.fc44.x86_64\t70000000\nno package provides installonlypkg(kernel-module)\n";
+
+    #[test]
+    fn test_parse_unneeded() {
+        assert!(parse_unneeded_output("", &[]).is_empty());
+        assert!(
+            parse_unneeded_output("kernel-core.x86_64\t7.2.5-200.fc44\t106627293\n", &[])
+                .is_empty()
+        );
+        let installonly = installonly_names(RPM_KERNEL_PACKAGES);
+        let items = parse_unneeded_output(DNF_UNNEEDED_OUTPUT, &installonly);
+        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["libfoo.x86_64", "python3-bar.noarch", "kernelshark.x86_64"]
+        );
+        assert_eq!(items[0].version, "1.2-3.fc44");
+        assert_eq!(items[0].size, Some(1258291));
+        assert_eq!(items[0].kind, CleanupKind::Orphan);
+        assert_eq!(items[0].source, SourceType::Dnf);
+    }
+
+    #[test]
+    fn test_orphan_nevra() {
+        assert_eq!(
+            orphan_nevra("kernel-devel.x86_64", "7.2.5-200.fc44"),
+            "kernel-devel-7.2.5-200.fc44.x86_64"
+        );
+        assert_eq!(
+            orphan_nevra("python3.11.x86_64", "3.11.11-1.fc44"),
+            "python3.11-3.11.11-1.fc44.x86_64"
+        );
+        assert_eq!(orphan_nevra("libfoo.x86_64", ""), "libfoo.x86_64");
+    }
+
+    #[test]
+    fn test_parse_kernel_packages_skips_variants_and_messages() {
+        let rows = parse_kernel_packages(RPM_KERNEL_PACKAGES);
+        assert_eq!(rows.len(), 8);
+        assert!(rows.iter().all(|r| r.name != "kernel-debug-core"));
+        assert!(
+            parse_kernel_packages("no package provides installonlypkg(kernel-module)\n").is_empty()
+        );
+    }
+
+    #[test]
+    fn test_kernel_versions_sums_sizes() {
+        assert!(kernel_versions(&parse_kernel_packages("")).is_empty());
+        let rows = parse_kernel_packages(RPM_KERNEL_PACKAGES);
+        let versions = kernel_versions(&rows);
+        assert_eq!(versions.len(), 3);
+        assert_eq!(
+            versions[0],
+            (
+                "7.2.5-200.fc44.x86_64".to_string(),
+                Some(77444095 + 106627293 + 105470864 + 70000000)
+            )
+        );
+    }
+
+    #[test]
+    fn test_kernel_packages_for_exact_version() {
+        let rows = parse_kernel_packages(RPM_KERNEL_PACKAGES);
+        let pkgs = kernel_packages_for(&rows, "7.2.5-200.fc44.x86_64");
+        assert_eq!(
+            pkgs,
+            vec![
+                "kernel-modules-core-7.2.5-200.fc44.x86_64",
+                "kernel-core-7.2.5-200.fc44.x86_64",
+                "kernel-modules-7.2.5-200.fc44.x86_64",
+                "kernel-7.2.5-200.fc44.x86_64",
+                "kernel-devel-7.2.5-200.fc44.x86_64",
+            ]
+        );
+    }
+
+    const DNF_REMOVE_PREVIEW: &str = "Package              Arch   Version          Repository      Size\nRemoving:\n kernel-core         x86_64 0:7.2.5-200.fc44 updates    101.7 MiB\nRemoving dependent packages:\n kernel              x86_64 0:7.2.5-200.fc44 updates      0.0   B\n kernel-modules      x86_64 0:7.2.5-200.fc44 updates    100.6 MiB\n kernel-modules-core x86_64 0:7.2.5-200.fc44 updates     73.9 MiB\n\nTransaction Summary:\n Removing:           4 packages\n";
+
+    fn preview(output: &str, requested: &[&str]) -> Result<Vec<String>> {
+        let requested: Vec<String> = requested.iter().map(|s| s.to_string()).collect();
+        extra_removals(parse_remove_preview(output), &requested, SourceType::Dnf)
+    }
+
+    #[test]
+    fn test_parse_remove_preview() {
+        assert_eq!(
+            preview(DNF_REMOVE_PREVIEW, &["kernel-core-7.2.5-200.fc44.x86_64"]).unwrap(),
+            vec![
+                "kernel-7.2.5-200.fc44.x86_64",
+                "kernel-modules-7.2.5-200.fc44.x86_64",
+                "kernel-modules-core-7.2.5-200.fc44.x86_64",
+            ]
+        );
+        let unused = "Removing:\n libfoo x86_64 2:1.2-3.fc44 fedora 1.0 MiB\nRemoving unused dependencies:\n libbar noarch 0.4-1.fc44 fedora 10.0 KiB\n";
+        assert_eq!(
+            preview(unused, &["libfoo-1.2-3.fc44.x86_64"]).unwrap(),
+            vec!["libbar-0.4-1.fc44.noarch"]
+        );
+    }
+
+    #[test]
+    fn test_parse_remove_preview_missing_requested_is_error() {
+        let requested = ["libfoo-1.2-3.fc44.x86_64"];
+        let nothing =
+            "No packages to remove for argument: libfoo-1.2-3.fc44.x86_64\n\nNothing to do.\n";
+        for output in ["", nothing] {
+            assert!(matches!(
+                preview(output, &requested),
+                Err(PikeError::Parse { .. })
+            ));
+        }
     }
 }

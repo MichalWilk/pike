@@ -131,6 +131,8 @@ pub struct DisplayConfig {
     pub language: String,
     #[serde(default)]
     pub architectures: ArchConfig,
+    #[serde(default = "default_true")]
+    pub confirm_actions: bool,
 }
 
 impl Default for DisplayConfig {
@@ -138,6 +140,7 @@ impl Default for DisplayConfig {
         Self {
             language: default_language(),
             architectures: ArchConfig::default(),
+            confirm_actions: true,
         }
     }
 }
@@ -229,6 +232,30 @@ impl Default for DaemonConfig {
     }
 }
 
+fn default_keep_kernels() -> usize {
+    2
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CleanupConfig {
+    #[serde(default = "default_keep_kernels")]
+    pub keep_kernels: usize,
+}
+
+impl Default for CleanupConfig {
+    fn default() -> Self {
+        Self {
+            keep_kernels: default_keep_kernels(),
+        }
+    }
+}
+
+impl CleanupConfig {
+    pub fn keep_kernels(&self) -> usize {
+        self.keep_kernels.max(1)
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -240,6 +267,8 @@ pub struct Config {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub daemon: DaemonConfig,
+    #[serde(default)]
+    pub cleanup: CleanupConfig,
 }
 
 impl Config {
@@ -259,6 +288,7 @@ impl Config {
                 display: DisplayConfig::default(),
                 logging: LoggingConfig::default(),
                 daemon: DaemonConfig::default(),
+                cleanup: CleanupConfig::default(),
             };
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -297,8 +327,10 @@ impl Config {
         out.push_str(&format!(
             "\n[display]\n\
              # Language: \"auto\" (detect from system), \"en\", or \"pl\"\n\
-             language = \"{}\"\n",
-            self.display.language
+             language = \"{}\"\n\
+             # Ask for confirmation in the TUI before install, remove, clean and repo changes\n\
+             confirm_actions = {}\n",
+            self.display.language, self.display.confirm_actions
         ));
 
         out.push_str(
@@ -329,6 +361,12 @@ impl Config {
              # Show desktop notifications when updates are found\n\
              notify = {}\n",
             self.daemon.interval, self.daemon.notify
+        ));
+
+        out.push_str(&format!(
+            "\n[cleanup]\n# Number of newest kernels to keep (the running kernel is always kept)\n\
+             keep_kernels = {}\n",
+            self.cleanup.keep_kernels()
         ));
         out
     }
@@ -371,6 +409,22 @@ mod tests {
         }
         assert_eq!(parsed.logging.file, config.logging.file);
         assert_eq!(parsed.display.language, config.display.language);
+        assert_eq!(
+            parsed.display.confirm_actions,
+            config.display.confirm_actions
+        );
+    }
+
+    #[test]
+    fn test_confirm_actions_default_and_roundtrip() {
+        assert!(Config::default().display.confirm_actions);
+        let parsed: Config = toml::from_str("[sources]\ndnf = true\n[display]\n").unwrap();
+        assert!(parsed.display.confirm_actions);
+
+        let mut config = Config::default();
+        config.display.confirm_actions = false;
+        let parsed: Config = toml::from_str(&config.to_toml_commented()).unwrap();
+        assert!(!parsed.display.confirm_actions);
     }
 
     #[test]
@@ -389,5 +443,30 @@ mod tests {
         let parsed: Config = toml::from_str(toml_str).unwrap();
         let dnf_arches = parsed.display.architectures.arches(SourceType::Dnf);
         assert!(dnf_arches.iter().any(|a| a == std::env::consts::ARCH));
+    }
+
+    #[test]
+    fn test_cleanup_roundtrip_and_missing_section() {
+        let mut config = Config::default();
+        config.cleanup.keep_kernels = 4;
+        let parsed: Config = toml::from_str(&config.to_toml_commented()).unwrap();
+        assert_eq!(parsed.cleanup.keep_kernels(), 4);
+
+        let parsed: Config = toml::from_str("[sources]\ndnf = true\n").unwrap();
+        assert_eq!(parsed.cleanup.keep_kernels(), 2);
+    }
+
+    #[test]
+    fn test_cleanup_keep_kernels_clamped() {
+        let parsed: Config =
+            toml::from_str("[sources]\ndnf = true\n[cleanup]\nkeep_kernels = 0\n").unwrap();
+        assert_eq!(parsed.cleanup.keep_kernels(), 1);
+    }
+
+    #[test]
+    fn test_cleanup_keep_kernels_written_clamped() {
+        let mut config = Config::default();
+        config.cleanup.keep_kernels = 0;
+        assert!(config.to_toml_commented().contains("keep_kernels = 1\n"));
     }
 }

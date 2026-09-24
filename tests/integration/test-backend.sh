@@ -252,15 +252,23 @@ else
     run_test "update multi (bash coreutils)" $PIKE update bash coreutils --source "$BACKEND"
 fi
 
-# --- autoremove ---
+# --- clean ---
 
 echo ""
-echo "[autoremove]"
+echo "[clean]"
+
+run_test "clean dry-run" $PIKE clean --dry-run --source "$BACKEND"
+run_test "clean kernels dry-run" $PIKE clean --kernels --dry-run --source "$BACKEND"
+
+output=$($PIKE --json clean --source "$BACKEND" 2>/dev/null) || true
+run_test "clean json" assert_json "$output"
+
+run_test "autoremove dry-run" $PIKE autoremove --dry-run --source "$BACKEND"
 
 if [ "$BACKEND" = "flatpak" ]; then
-    skip_test "autoremove" "flatpak needs system bus"
+    skip_test "clean orphans" "flatpak needs system bus"
 else
-    run_test "autoremove" $PIKE autoremove
+    run_test "clean orphans" $PIKE clean --orphans -y --source "$BACKEND"
 fi
 
 # --- results ---

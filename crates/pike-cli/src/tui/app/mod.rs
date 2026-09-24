@@ -1,15 +1,19 @@
+mod confirm;
 mod handlers;
 mod settings;
 
 use std::collections::{HashMap, HashSet};
 
 use pike_core::config::Config;
-use pike_core::package::{Package, PackageUpdate, RepoMethod, Repository, SourceType};
+use pike_core::package::{
+    CleanupItem, CleanupKind, CleanupScan, Package, PackageUpdate, RepoMethod, Repository,
+    SourceType,
+};
 use ratatui::widgets::TableState;
 use rust_i18n::t;
 
 pub use super::types::{Action, InputMode, Tab};
-use super::types::{AddRepoParams, FormField, SettingsRow, ViewState};
+use super::types::{AddRepoParams, FormField, PendingConfirm, SettingsRow, ViewState};
 
 fn name_from_url(url: &str) -> String {
     let stripped = url
@@ -187,6 +191,10 @@ pub(crate) struct App {
     pub(crate) installed: ListTabState<Package>,
     pub(crate) updates: ListTabState<PackageUpdate>,
     pub(crate) repos: ReposTab,
+    pub(crate) cleanup: ListTabState<CleanupItem>,
+    pub(crate) cleanup_selected: HashSet<usize>,
+    pub(crate) last_clean_ok: Option<bool>,
+    pub(crate) pending_confirm: Option<PendingConfirm>,
 
     pub(crate) config: Config,
     pub(crate) status_message: String,
@@ -224,6 +232,14 @@ fn repo_matches(r: &Repository, q: &str) -> bool {
     r.id.to_lowercase().contains(q) || r.name.to_lowercase().contains(q)
 }
 
+fn cleanup_source(i: &CleanupItem) -> SourceType {
+    i.source
+}
+
+fn cleanup_matches(i: &CleanupItem, q: &str) -> bool {
+    i.name.to_lowercase().contains(q)
+}
+
 impl App {
     pub(crate) fn new(
         config: Config,
@@ -250,6 +266,10 @@ impl App {
                 list: ListTabState::new(),
                 add_form: ReposAddForm::default(),
             },
+            cleanup: ListTabState::new(),
+            cleanup_selected: HashSet::new(),
+            last_clean_ok: None,
+            pending_confirm: None,
             config,
             status_message: String::new(),
             active_sources,
@@ -362,6 +382,9 @@ impl App {
     }
 
     fn switch_tab(&mut self, tab: Tab) {
+        if self.tab == Tab::Cleanup && tab != Tab::Cleanup {
+            self.last_clean_ok = None;
+        }
         self.tab = tab;
         self.status_message.clear();
         if tab == Tab::Settings {
@@ -473,11 +496,61 @@ impl App {
         self.repos.list.filtered_indices(repo_source, repo_matches)
     }
 
+    pub(crate) fn set_cleanup(&mut self, scan: CleanupScan, keep: usize, view: &mut ViewState) {
+        self.cleanup_selected = scan
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| i.kind != CleanupKind::OldKernel)
+            .map(|(idx, _)| idx)
+            .collect();
+        self.cleanup.items = scan.items;
+        self.cleanup.filter.clear();
+        self.cleanup
+            .sync_selection(&mut view.cleanup_table, cleanup_source, cleanup_matches);
+        self.cleanup.loading = false;
+        self.cleanup.loaded = keep == self.config.cleanup.keep_kernels();
+        self.status_message = if !scan.failed.is_empty() {
+            let sources = scan
+                .failed
+                .iter()
+                .map(|(st, _)| st.display_name())
+                .collect::<Vec<_>>()
+                .join(", ");
+            t!("tui.status.cleanup-failed", source = sources).to_string()
+        } else {
+            t!("tui.status.cleanup-scanned").to_string()
+        };
+    }
+
+    pub(crate) fn cleanup_filtered_indices(&self) -> Vec<usize> {
+        self.cleanup
+            .filtered_indices(cleanup_source, cleanup_matches)
+    }
+
+    pub(crate) fn toggle_cleanup_selection(&mut self, real_idx: usize) {
+        if !self.cleanup_selected.remove(&real_idx) {
+            self.cleanup_selected.insert(real_idx);
+        }
+    }
+
+    pub(crate) fn selected_cleanup_items(&self) -> impl Iterator<Item = &CleanupItem> {
+        self.cleanup_filtered_indices()
+            .into_iter()
+            .filter(move |i| self.cleanup_selected.contains(i))
+            .filter_map(move |i| self.cleanup.items.get(i))
+    }
+
+    pub(crate) fn needs_cleanup_load(&self) -> bool {
+        self.tab == Tab::Cleanup && !self.cleanup.loaded && !self.cleanup.loading
+    }
+
     fn active_filter_mut(&mut self) -> Option<&mut String> {
         match self.tab {
             Tab::Installed => Some(&mut self.installed.filter),
             Tab::Updates => Some(&mut self.updates.filter),
             Tab::Repos => Some(&mut self.repos.list.filter),
+            Tab::Cleanup => Some(&mut self.cleanup.filter),
             _ => None,
         }
     }
@@ -502,6 +575,13 @@ impl App {
                     .list
                     .sync_selection(&mut view.repos_table, repo_source, repo_matches);
             }
+            Tab::Cleanup => {
+                self.cleanup.sync_selection(
+                    &mut view.cleanup_table,
+                    cleanup_source,
+                    cleanup_matches,
+                );
+            }
             Tab::Settings | Tab::About => {}
         }
     }
@@ -512,6 +592,7 @@ impl App {
             Tab::Installed => self.installed.source_filter,
             Tab::Updates => self.updates.source_filter,
             Tab::Repos => self.repos.list.source_filter,
+            Tab::Cleanup => self.cleanup.source_filter,
             Tab::Settings | Tab::About => None,
         }
     }
@@ -538,6 +619,11 @@ impl App {
                 repo_source,
                 repo_matches,
             ),
+            Tab::Cleanup => self.cleanup.cycle_source_filter(
+                &mut view.cleanup_table,
+                cleanup_source,
+                cleanup_matches,
+            ),
             Tab::Settings | Tab::About => {}
         }
     }
@@ -552,5 +638,142 @@ impl App {
 
     pub(crate) fn is_editing_on(&self, tab: Tab) -> bool {
         self.input_mode == InputMode::Editing && self.tab == tab
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pike_core::package::{CleanupItem, CleanupKind, CleanupScan};
+
+    fn item(source: SourceType, kind: CleanupKind, name: &str) -> CleanupItem {
+        CleanupItem {
+            source,
+            kind,
+            name: name.into(),
+            version: String::new(),
+            size: Some(10),
+            arch: None,
+        }
+    }
+
+    fn app_with_cleanup() -> (App, ViewState) {
+        let mut app = App::new(
+            Config::default(),
+            Vec::new(),
+            vec![SourceType::Dnf, SourceType::Flatpak],
+        );
+        let mut view = ViewState::new(false);
+        let scan = CleanupScan {
+            items: vec![
+                item(SourceType::Dnf, CleanupKind::Orphan, "libfoo.x86_64"),
+                item(
+                    SourceType::Flatpak,
+                    CleanupKind::UnusedRuntime,
+                    "org.gnome.Platform",
+                ),
+                item(SourceType::Dnf, CleanupKind::OldKernel, "kernel"),
+            ],
+            failed: Vec::new(),
+        };
+        app.set_cleanup(scan, 2, &mut view);
+        (app, view)
+    }
+
+    #[test]
+    fn test_cleanup_default_selection_skips_kernels() {
+        let (app, _) = app_with_cleanup();
+        let names: Vec<String> = app
+            .selected_cleanup_items()
+            .map(|i| i.name.clone())
+            .collect();
+        assert_eq!(names, vec!["libfoo.x86_64", "org.gnome.Platform"]);
+    }
+
+    #[test]
+    fn test_cleanup_toggle_selection() {
+        let (mut app, _) = app_with_cleanup();
+        app.toggle_cleanup_selection(2);
+        app.toggle_cleanup_selection(0);
+        let names: Vec<String> = app
+            .selected_cleanup_items()
+            .map(|i| i.name.clone())
+            .collect();
+        assert_eq!(names, vec!["org.gnome.Platform", "kernel"]);
+    }
+
+    #[test]
+    fn test_cleanup_selected_respects_filter() {
+        let (mut app, _) = app_with_cleanup();
+        app.cleanup.source_filter = Some(SourceType::Flatpak);
+        let names: Vec<String> = app
+            .selected_cleanup_items()
+            .map(|i| i.name.clone())
+            .collect();
+        assert_eq!(names, vec!["org.gnome.Platform"]);
+    }
+
+    #[test]
+    fn test_clean_result_survives_rescan() {
+        let (mut app, mut view) = app_with_cleanup();
+        app.last_clean_ok = Some(true);
+        let scan = CleanupScan {
+            items: vec![item(SourceType::Dnf, CleanupKind::Orphan, "libfoo.x86_64")],
+            failed: Vec::new(),
+        };
+        app.set_cleanup(scan, 2, &mut view);
+        assert_eq!(app.last_clean_ok, Some(true));
+        assert_eq!(app.status_message, t!("tui.status.cleanup-scanned"));
+    }
+
+    #[test]
+    fn test_stale_keep_kernels_scan_triggers_rescan() {
+        let (mut app, mut view) = app_with_cleanup();
+        app.tab = Tab::Cleanup;
+        app.config.cleanup.keep_kernels = 3;
+        app.set_cleanup(CleanupScan::default(), 2, &mut view);
+        assert!(!app.cleanup.loaded);
+        assert!(app.needs_cleanup_load());
+
+        app.set_cleanup(CleanupScan::default(), 3, &mut view);
+        assert!(app.cleanup.loaded);
+        assert!(!app.needs_cleanup_load());
+    }
+
+    #[test]
+    fn test_cleanup_scan_failed_joins_all_sources() {
+        let (mut app, mut view) = app_with_cleanup();
+        let scan = CleanupScan {
+            items: Vec::new(),
+            failed: vec![
+                (SourceType::Dnf, "boom".to_string()),
+                (SourceType::Flatpak, "boom".to_string()),
+            ],
+        };
+        app.set_cleanup(scan, 2, &mut view);
+        assert!(app.status_message.contains(SourceType::Dnf.display_name()));
+        assert!(
+            app.status_message
+                .contains(SourceType::Flatpak.display_name())
+        );
+    }
+
+    #[test]
+    fn test_keep_kernels_cycles_1_to_5() {
+        let mut app = App::new(Config::default(), Vec::new(), vec![SourceType::Dnf]);
+        let mut view = ViewState::new(false);
+        app.config.cleanup.keep_kernels = 0;
+        let mut seen = Vec::new();
+        for _ in 0..6 {
+            app.ensure_settings_cache();
+            let idx = app
+                .settings_layout()
+                .iter()
+                .position(|r| matches!(r, SettingsRow::KeepKernels));
+            view.settings_table.select(idx);
+            app.activate_selected_setting(&mut view);
+            seen.push(app.config.cleanup.keep_kernels);
+        }
+        assert_eq!(seen, vec![2, 3, 4, 5, 1, 2]);
     }
 }

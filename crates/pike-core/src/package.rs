@@ -191,6 +191,53 @@ pub struct Repository {
     pub url: Option<String>,
 }
 
+/// Variant order is the display and scan order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CleanupKind {
+    Orphan,
+    UnusedRuntime,
+    OldKernel,
+    Cache,
+}
+
+impl CleanupKind {
+    pub const ALL: [CleanupKind; 4] = [
+        CleanupKind::Orphan,
+        CleanupKind::UnusedRuntime,
+        CleanupKind::OldKernel,
+        CleanupKind::Cache,
+    ];
+}
+
+fn serialize_source<S: serde::Serializer>(
+    source: &SourceType,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(source.display_name())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CleanupItem {
+    #[serde(serialize_with = "serialize_source")]
+    pub source: SourceType,
+    pub kind: CleanupKind,
+    /// Package name (dnf: `name.arch`), runtime ID, `kernel` or cache directory.
+    pub name: String,
+    /// Version, runtime branch or kernel release; empty for caches.
+    pub version: String,
+    pub size: Option<u64>,
+    /// Set for flatpak runtimes only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arch: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct CleanupScan {
+    pub items: Vec<CleanupItem>,
+    pub failed: Vec<(SourceType, String)>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageUpdate {
     pub name: String,
@@ -232,5 +279,33 @@ impl StatusSummary {
 
     pub fn count(&self, st: SourceType) -> usize {
         self.counts.get(&st).copied().unwrap_or(0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cleanup_kind_serde_snake_case() {
+        let json =
+            serde_json::to_string(&[CleanupKind::UnusedRuntime, CleanupKind::OldKernel]).unwrap();
+        assert_eq!(json, r#"["unused_runtime","old_kernel"]"#);
+    }
+
+    #[test]
+    fn test_cleanup_item_serializes_source_lowercase() {
+        let item = CleanupItem {
+            source: SourceType::Dnf,
+            kind: CleanupKind::Cache,
+            name: "/var/cache/libdnf5".to_string(),
+            version: String::new(),
+            size: Some(42),
+            arch: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&item).unwrap(),
+            r#"{"source":"dnf","kind":"cache","name":"/var/cache/libdnf5","version":"","size":42}"#
+        );
     }
 }

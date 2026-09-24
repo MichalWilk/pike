@@ -87,6 +87,7 @@ async fn run_loop(
         hit.clear();
         terminal.draw(|frame| ui::render(frame, app, &mut view, &mut hit))?;
 
+        let was_pending = app.pending_confirm.is_some();
         let actions = match events.next()? {
             Event::Key(key) => app.handle_key(key, &mut view),
             Event::Mouse(mouse) => app.handle_mouse(mouse, &hit, &mut view),
@@ -95,6 +96,9 @@ async fn run_loop(
                 continue;
             }
         };
+        if !was_pending && let Some(items) = app.pending_clean_items() {
+            async_ops::spawn_clean_preview(&tx, active_sources, items.to_vec());
+        }
         for action in actions {
             actions::handle_action(
                 terminal,
@@ -137,6 +141,12 @@ fn process_async_results(
             AsyncResult::Repos(repos) => {
                 app.set_repos(repos, view);
             }
+            AsyncResult::Cleanup { scan, keep } => {
+                app.set_cleanup(scan, keep, view);
+            }
+            AsyncResult::CleanPreview { items, extras } => {
+                app.set_clean_preview(&items, extras);
+            }
         }
     }
 
@@ -146,6 +156,10 @@ fn process_async_results(
 
     if app.needs_repos_load() {
         async_ops::spawn_list_repos(app, tx, active_sources);
+    }
+
+    if app.needs_cleanup_load() {
+        async_ops::spawn_list_cleanup(app, tx, active_sources);
     }
 }
 

@@ -1,8 +1,24 @@
 use async_trait::async_trait;
 
+use crate::cleanup::{
+    cache_item, of_kind, old_kernel_items, preview_removal, removal_list, remove_and_clean_cache,
+    running_kernel,
+};
 use crate::error::PikeError;
-use crate::package::{Package, PackageUpdate, RepoMethod, Repository, SourceType};
-use crate::source::{PackageSource, Result, run_captured, run_captured_allow_exit, run_privileged};
+use crate::package::{
+    CleanupItem, CleanupKind, Package, PackageUpdate, RepoMethod, Repository, SourceType,
+};
+use crate::source::{
+    PackageSource, Result, run_captured, run_captured_allow_exit, run_captured_c, run_privileged,
+};
+
+const APT_KERNEL_PREFIXES: [&str; 4] = [
+    "linux-image-",
+    "linux-modules-",
+    "linux-headers-",
+    "linux-tools-",
+];
+const APT_CACHE_DIR: &str = "/var/cache/apt/archives";
 
 #[derive(Default)]
 pub struct AptSource;
@@ -47,10 +63,6 @@ impl PackageSource for AptSource {
         let refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
         args.extend_from_slice(&refs);
         run_privileged(&args).await
-    }
-
-    async fn autoremove(&self) -> Result<()> {
-        run_privileged(&["apt-get", "autoremove", "-y"]).await
     }
 
     async fn check_updates(&self) -> Result<Vec<PackageUpdate>> {
@@ -133,6 +145,100 @@ impl PackageSource for AptSource {
     async fn remove_repo(&self, id: &str) -> Result<()> {
         run_privileged(&["add-apt-repository", "--remove", "-y", id]).await
     }
+
+    async fn list_cleanup(
+        &self,
+        kinds: &[CleanupKind],
+        keep_kernels: usize,
+    ) -> Result<Vec<CleanupItem>> {
+        let mut items = Vec::new();
+        if kinds.contains(&CleanupKind::Orphan) {
+            let sim = run_captured_c("apt-get", &["-s", "autoremove"], &[]).await?;
+            items = parse_autoremove_sim(&sim);
+            if !items.is_empty() {
+                let mut args = vec!["-W", "--showformat=${binary:Package}\t${Installed-Size}\n"];
+                args.extend(items.iter().map(|i| i.name.as_str()));
+                let sizes = parse_installed_sizes(
+                    &run_captured_allow_exit("dpkg-query", &args, &[1]).await?,
+                );
+                for item in &mut items {
+                    item.size = sizes.get(&item.name).copied();
+                }
+            }
+        }
+        if kinds.contains(&CleanupKind::OldKernel) {
+            let output = query_linux_packages().await?;
+            items.extend(apt_old_kernel_items(
+                &parse_linux_packages(&output),
+                running_kernel().as_deref(),
+                keep_kernels,
+            ));
+        }
+        if kinds.contains(&CleanupKind::Cache) {
+            items.extend(cache_item(SourceType::Apt, APT_CACHE_DIR).await);
+        }
+        Ok(items)
+    }
+
+    async fn clean(&self, items: &[CleanupItem]) -> Result<()> {
+        let packages = removal_packages(items).await?;
+        remove_and_clean_cache(
+            items,
+            &packages,
+            &["apt-get", "remove", "-y"],
+            &["apt-get", "clean"],
+        )
+        .await
+    }
+
+    async fn preview_clean(&self, items: &[CleanupItem]) -> Result<Vec<String>> {
+        preview_removal(
+            SourceType::Apt,
+            &removal_packages(items).await?,
+            "apt-get",
+            &["-s", "remove"],
+            &[],
+            parse_remove_preview,
+        )
+        .await
+    }
+}
+
+async fn removal_packages(items: &[CleanupItem]) -> Result<Vec<String>> {
+    let orphans = of_kind(items, CleanupKind::Orphan)
+        .map(|i| i.name.clone())
+        .collect();
+    let versions: Vec<&str> = of_kind(items, CleanupKind::OldKernel)
+        .map(|i| i.version.as_str())
+        .collect();
+    let mut kernel_pkgs = Vec::new();
+    if !versions.is_empty() {
+        let output = query_linux_packages().await?;
+        let linux = parse_linux_packages(&output);
+        kernel_pkgs = versions
+            .iter()
+            .flat_map(|v| apt_kernel_packages_for(&linux, v, &versions))
+            .map(|p| p.name.to_string())
+            .collect();
+    }
+    Ok(removal_list(
+        orphans,
+        kernel_pkgs,
+        running_kernel().as_deref(),
+    ))
+}
+
+async fn query_linux_packages() -> Result<String> {
+    run_captured_allow_exit(
+        "dpkg-query",
+        &[
+            "-W",
+            "--showformat=${db:Status-Abbrev}\t${Package}\t${Installed-Size}\n",
+            "linux-*",
+        ],
+        &[1],
+    )
+    .await
 }
 
 pub(crate) fn parse_search_output(output: &str) -> Vec<Package> {
@@ -308,9 +414,189 @@ pub(crate) fn parse_deb822_sources(output: &str) -> Vec<Repository> {
     repos
 }
 
+fn remv_lines(output: &str) -> impl Iterator<Item = (&str, &str)> {
+    output.lines().filter_map(|line| {
+        let rest = line.strip_prefix("Remv ")?;
+        let (name, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+        let version = rest
+            .strip_prefix('[')
+            .and_then(|r| r.split_once(']'))
+            .map_or("", |(v, _)| v);
+        Some((name, version))
+    })
+}
+
+pub(crate) fn parse_remove_preview(output: &str) -> Vec<String> {
+    remv_lines(output)
+        .map(|(name, _)| name.to_string())
+        .collect()
+}
+
+pub(crate) fn parse_autoremove_sim(output: &str) -> Vec<CleanupItem> {
+    remv_lines(output)
+        .filter(|(name, _)| !is_kernel_package(name))
+        .map(|(name, version)| CleanupItem {
+            source: SourceType::Apt,
+            kind: CleanupKind::Orphan,
+            name: name.to_string(),
+            version: version.to_string(),
+            size: None,
+            arch: None,
+        })
+        .collect()
+}
+
+/// A `name:arch` entry is also reachable by its bare name, since apt omits the native arch.
+pub(crate) fn parse_installed_sizes(output: &str) -> std::collections::HashMap<String, u64> {
+    let mut sizes = std::collections::HashMap::new();
+    for line in output.lines() {
+        let Some((name, kib)) = line.split_once('\t') else {
+            continue;
+        };
+        let Ok(kib) = kib.trim().parse::<u64>() else {
+            continue;
+        };
+        if let Some((bare, _)) = name.split_once(':') {
+            sizes.entry(bare.to_string()).or_insert(kib * 1024);
+        }
+        sizes.insert(name.to_string(), kib * 1024);
+    }
+    sizes
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct LinuxPackage<'a> {
+    name: &'a str,
+    size: Option<u64>,
+    held: bool,
+}
+
+pub(crate) fn parse_linux_packages(output: &str) -> Vec<LinuxPackage<'_>> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let status = fields.next()?.as_bytes();
+            if status.get(1) != Some(&b'i') {
+                return None;
+            }
+            let name = fields.next()?.trim();
+            let size = fields
+                .next()
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .map(|kib| kib * 1024);
+            (!name.is_empty()).then_some(LinuxPackage {
+                name,
+                size,
+                held: status.first() == Some(&b'h'),
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn parse_apt_kernels(linux: &[LinuxPackage]) -> Vec<(String, Option<u64>, bool)> {
+    linux
+        .iter()
+        .filter_map(|p| {
+            let version = p.name.strip_prefix("linux-image-")?;
+            if !version.starts_with(|c: char| c.is_ascii_digit())
+                || ["-dbg", "-dbgsym", "-unsigned"]
+                    .iter()
+                    .any(|s| version.ends_with(s))
+            {
+                return None;
+            }
+            let pkgs: Vec<&LinuxPackage> =
+                apt_kernel_packages_for(linux, version, &[version]).collect();
+            let size = pkgs.iter().filter_map(|p| p.size).reduce(|a, b| a + b);
+            let held = pkgs.iter().any(|p| p.held);
+            Some((version.to_string(), size, held))
+        })
+        .collect()
+}
+
+/// Held kernels count toward `keep` but are never offered: `apt-get -y` refuses to touch them.
+pub(crate) fn apt_old_kernel_items(
+    linux: &[LinuxPackage],
+    running: Option<&str>,
+    keep: usize,
+) -> Vec<CleanupItem> {
+    let kernels = parse_apt_kernels(linux);
+    let held: Vec<String> = kernels
+        .iter()
+        .filter(|(_, _, held)| *held)
+        .map(|(v, _, _)| v.clone())
+        .collect();
+    old_kernel_items(
+        kernels.into_iter().map(|(v, size, _)| (v, size)).collect(),
+        running,
+        keep,
+        SourceType::Apt,
+        |v| format!("linux-image-{v}"),
+    )
+    .into_iter()
+    .filter(|i| !held.contains(&i.version))
+    .collect()
+}
+
+/// Headers and tools shared by the kernel's ABI (`linux-[F-]headers-X`, `linux-[F-]tools-X`)
+/// are included only when every installed image of that ABI is being removed.
+pub(crate) fn apt_kernel_packages_for<'a>(
+    linux: &'a [LinuxPackage<'a>],
+    version: &str,
+    removing: &[&str],
+) -> impl Iterator<Item = &'a LinuxPackage<'a>> {
+    let full = format!("-{version}");
+    let is_image = |x: &str| {
+        linux
+            .iter()
+            .any(|p| p.name.strip_prefix("linux-image-") == Some(x))
+    };
+    let abi = linux
+        .iter()
+        .filter_map(|p| shared_abi(p.name))
+        .filter(|x| has_abi(version, x) && !is_image(x))
+        .min_by_key(|x| x.len());
+    let shared_unused = abi.is_some_and(|abi| {
+        !linux.iter().any(|p| {
+            p.name
+                .strip_prefix("linux-image-")
+                .is_some_and(|v| has_abi(v, abi) && !removing.contains(&v))
+        })
+    });
+    linux.iter().filter(move |p| {
+        (APT_KERNEL_PREFIXES
+            .iter()
+            .any(|pre| p.name.starts_with(pre))
+            && p.name.ends_with(&full))
+            || (shared_unused && shared_abi(p.name) == abi)
+    })
+}
+
+fn is_kernel_package(name: &str) -> bool {
+    APT_KERNEL_PREFIXES.iter().any(|p| name.starts_with(p)) || shared_abi(name).is_some()
+}
+
+fn shared_abi(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix("linux-")?;
+    let rest = ["headers-", "tools-"].iter().find_map(|kind| {
+        rest.strip_prefix(kind)
+            .or_else(|| rest.split_once(&format!("-{kind}")).map(|(_, r)| r))
+    })?;
+    let abi = rest.split_once("-common").map_or(rest, |(abi, _)| abi);
+    abi.starts_with(|c: char| c.is_ascii_digit()).then_some(abi)
+}
+
+fn has_abi(version: &str, abi: &str) -> bool {
+    version
+        .strip_prefix(abi)
+        .is_some_and(|rest| rest.starts_with('-'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cleanup::extra_removals;
 
     const APT_SEARCH_OUTPUT: &str = "firefox - Safe and easy web browser from Mozilla\nfirefox-locale-en - English language pack for Firefox\nchromium - open-source version of Chrome\n";
 
@@ -640,5 +926,373 @@ URIs: http://example.com/flat-repo/
             packages[0].description.as_deref(),
             Some("Vi IMproved - Runtime files")
         );
+    }
+
+    const APT_AUTOREMOVE_SIM: &str = "NOTE: This is only a simulation!\nReading package lists...\nRemv libfoo1 [1.2-3]\nRemv linux-image-6.8.0-45-generic [6.8.0-45.45]\nRemv linux-modules-6.8.0-45-generic [6.8.0-45.45]\nRemv linux-tools-6.8.0-45 [6.8.0-45.45]\nRemv python3-bar [0.4-1]\nRemv libbaz1:i386 [1.0]\n";
+
+    const APT_SIZES: &str =
+        "libfoo1\t1229\npython3-bar\t340\nlibbaz1:i386\t77\nlibqux1:amd64\t10\n";
+
+    const APT_LINUX_PACKAGES: &str = "ii \tlinux-image-6.8.0-45-generic\t14000\nii \tlinux-modules-6.8.0-45-generic\t80000\nii \tlinux-modules-extra-6.8.0-45-generic\t200000\nii \tlinux-headers-6.8.0-45-generic\t3000\nii \tlinux-headers-6.8.0-45\t90000\nii \tlinux-tools-6.8.0-45-generic\t500\nii \tlinux-tools-6.8.0-45\t700\nii \tlinux-tools-common\t20\nhi \tlinux-image-6.8.0-100-generic\t14100\nii \tlinux-image-6.8.0-90-generic\t14050\nii \tlinux-headers-generic\t10\nrc \tlinux-image-6.8.0-30-generic\t13900\nrc \tlinux-modules-6.8.0-30-generic\t1\n";
+
+    const APT_LINUX_TWO_FLAVOURS: &str = "ii \tlinux-image-6.8.0-45-generic\t14000\nii \tlinux-headers-6.8.0-45-generic\t3000\nii \tlinux-image-6.8.0-45-lowlatency\t14000\nii \tlinux-headers-6.8.0-45-lowlatency\t3000\nii \tlinux-headers-6.8.0-45\t90000\n";
+
+    #[test]
+    fn test_parse_autoremove_sim_excludes_kernels() {
+        let items = parse_autoremove_sim(APT_AUTOREMOVE_SIM);
+        let names: Vec<&str> = items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["libfoo1", "python3-bar", "libbaz1:i386"]);
+        assert_eq!(items[0].version, "1.2-3");
+        assert_eq!(items[0].kind, CleanupKind::Orphan);
+        assert_eq!(items[0].source, SourceType::Apt);
+    }
+
+    #[test]
+    fn test_parse_installed_sizes_multiarch() {
+        let expected: std::collections::HashMap<String, u64> = [
+            ("libfoo1", 1229),
+            ("python3-bar", 340),
+            ("libbaz1:i386", 77),
+            ("libbaz1", 77),
+            ("libqux1:amd64", 10),
+            ("libqux1", 10),
+        ]
+        .into_iter()
+        .map(|(name, kib)| (name.to_string(), kib * 1024))
+        .collect();
+        assert_eq!(parse_installed_sizes(APT_SIZES), expected);
+    }
+
+    fn names<'a>(pkgs: impl Iterator<Item = &'a LinuxPackage<'a>>) -> Vec<&'a str> {
+        pkgs.map(|p| p.name).collect()
+    }
+
+    #[test]
+    fn test_parse_apt_kernels() {
+        assert!(parse_apt_kernels(&parse_linux_packages("")).is_empty());
+        let linux = parse_linux_packages(APT_LINUX_PACKAGES);
+        let k = parse_apt_kernels(&linux);
+        let versions: Vec<&str> = k.iter().map(|(v, ..)| v.as_str()).collect();
+        assert_eq!(
+            versions,
+            vec!["6.8.0-45-generic", "6.8.0-100-generic", "6.8.0-90-generic"]
+        );
+        assert_eq!(
+            k[0].1,
+            Some((14000 + 80000 + 200000 + 3000 + 90000 + 500 + 700) * 1024)
+        );
+        assert_eq!(k[1].1, Some(14100 * 1024));
+    }
+
+    #[test]
+    fn test_parse_apt_kernels_skips_dbg_and_unsigned() {
+        let linux = parse_linux_packages(
+            "ii \tlinux-image-6.8.0-45-generic\t1\nii \tlinux-image-6.8.0-45-generic-dbg\t1\nii \tlinux-image-6.8.0-45-generic-dbgsym\t1\nii \tlinux-image-6.8.0-45-unsigned\t1\n",
+        );
+        let k = parse_apt_kernels(&linux);
+        assert_eq!(k.len(), 1);
+        assert_eq!(k[0].0, "6.8.0-45-generic");
+    }
+
+    #[test]
+    fn test_parse_linux_packages_status() {
+        let linux = parse_linux_packages(
+            "hi \tlinux-image-6.8.0-45-generic\t1\nrc \tlinux-image-6.8.0-30-generic\t1\niU \tlinux-image-6.8.0-31-generic\t1\n",
+        );
+        assert_eq!(
+            linux,
+            vec![LinuxPackage {
+                name: "linux-image-6.8.0-45-generic",
+                size: Some(1024),
+                held: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn test_apt_old_kernel_items_held() {
+        let linux = parse_linux_packages(APT_LINUX_PACKAGES);
+        let versions = |items: Vec<CleanupItem>| -> Vec<String> {
+            items.into_iter().map(|i| i.version).collect()
+        };
+        assert_eq!(
+            versions(apt_old_kernel_items(&linux, Some("7.0.0-1-generic"), 1)),
+            vec!["6.8.0-90-generic", "6.8.0-45-generic"]
+        );
+        let held_old = parse_linux_packages(
+            "ii \tlinux-image-6.8.0-100-generic\t1\nhi \tlinux-image-6.8.0-45-generic\t1\nii \tlinux-image-6.8.0-30-generic\t1\n",
+        );
+        assert_eq!(
+            versions(apt_old_kernel_items(
+                &held_old,
+                Some("6.8.0-100-generic"),
+                1
+            )),
+            vec!["6.8.0-30-generic"]
+        );
+        let held_headers = parse_linux_packages(
+            "ii \tlinux-image-6.8.0-100-generic\t1\nii \tlinux-image-6.8.0-45-generic\t1\nhi \tlinux-headers-6.8.0-45-generic\t1\nii \tlinux-image-6.8.0-30-generic\t1\nhi \tlinux-modules-6.8.0-3-generic\t1\n",
+        );
+        assert_eq!(
+            versions(apt_old_kernel_items(
+                &held_headers,
+                Some("6.8.0-100-generic"),
+                1
+            )),
+            vec!["6.8.0-30-generic"]
+        );
+    }
+
+    #[test]
+    fn test_apt_kernel_packages_for() {
+        let linux = parse_linux_packages(APT_LINUX_PACKAGES);
+        assert_eq!(
+            names(apt_kernel_packages_for(
+                &linux,
+                "6.8.0-45-generic",
+                &["6.8.0-45-generic"]
+            )),
+            vec![
+                "linux-image-6.8.0-45-generic",
+                "linux-modules-6.8.0-45-generic",
+                "linux-modules-extra-6.8.0-45-generic",
+                "linux-headers-6.8.0-45-generic",
+                "linux-headers-6.8.0-45",
+                "linux-tools-6.8.0-45-generic",
+                "linux-tools-6.8.0-45",
+            ]
+        );
+        assert_eq!(
+            apt_kernel_packages_for(&linux, "6.8.0-30-generic", &["6.8.0-30-generic"]).count(),
+            0
+        );
+    }
+
+    #[test]
+    fn test_apt_kernel_packages_for_keeps_shared_headers_of_kept_flavour() {
+        let linux = parse_linux_packages(APT_LINUX_TWO_FLAVOURS);
+        assert_eq!(
+            names(apt_kernel_packages_for(
+                &linux,
+                "6.8.0-45-generic",
+                &["6.8.0-45-generic"]
+            )),
+            vec![
+                "linux-image-6.8.0-45-generic",
+                "linux-headers-6.8.0-45-generic"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_apt_kernel_packages_for_shared_headers_when_all_flavours_removed() {
+        let linux = parse_linux_packages(APT_LINUX_TWO_FLAVOURS);
+        let removing = ["6.8.0-45-generic", "6.8.0-45-lowlatency"];
+        for v in removing {
+            assert!(
+                names(apt_kernel_packages_for(&linux, v, &removing))
+                    .contains(&"linux-headers-6.8.0-45")
+            );
+        }
+    }
+
+    const APT_LINUX_DEBIAN: &str = "ii \tlinux-image-6.1.0-25-amd64\t1\nii \tlinux-headers-6.1.0-25-amd64\t1\nii \tlinux-image-6.1.0-25-cloud-amd64\t1\nii \tlinux-headers-6.1.0-25-cloud-amd64\t1\nii \tlinux-headers-6.1.0-25-common\t1\nii \tlinux-image-6.1.0-26-amd64\t1\n";
+
+    #[test]
+    fn test_apt_kernel_packages_for_debian_flavours() {
+        let linux = parse_linux_packages(APT_LINUX_DEBIAN);
+        assert_eq!(
+            names(apt_kernel_packages_for(
+                &linux,
+                "6.1.0-25-amd64",
+                &["6.1.0-25-amd64"]
+            )),
+            vec!["linux-image-6.1.0-25-amd64", "linux-headers-6.1.0-25-amd64"]
+        );
+        let removing = ["6.1.0-25-amd64", "6.1.0-25-cloud-amd64"];
+        assert_eq!(
+            names(apt_kernel_packages_for(
+                &linux,
+                "6.1.0-25-cloud-amd64",
+                &removing
+            )),
+            vec![
+                "linux-image-6.1.0-25-cloud-amd64",
+                "linux-headers-6.1.0-25-cloud-amd64",
+                "linux-headers-6.1.0-25-common",
+            ]
+        );
+    }
+
+    const APT_LINUX_DEBIAN13: &str = "ii \tlinux-image-6.12.43+deb13-amd64\t1\nii \tlinux-headers-6.12.43+deb13-amd64\t1\nii \tlinux-image-6.12.43+deb13-cloud-amd64\t1\nii \tlinux-headers-6.12.43+deb13-cloud-amd64\t1\nii \tlinux-headers-6.12.43+deb13-common\t1\nii \tlinux-image-6.12.48+deb13-amd64\t1\nii \tlinux-headers-6.12.48+deb13-amd64\t1\nii \tlinux-headers-6.12.48+deb13-common\t1\n";
+
+    #[test]
+    fn test_apt_kernel_packages_for_debian13_flavours() {
+        let linux = parse_linux_packages(APT_LINUX_DEBIAN13);
+        assert_eq!(
+            names(apt_kernel_packages_for(
+                &linux,
+                "6.12.43+deb13-amd64",
+                &["6.12.43+deb13-amd64"]
+            )),
+            vec![
+                "linux-image-6.12.43+deb13-amd64",
+                "linux-headers-6.12.43+deb13-amd64"
+            ]
+        );
+        let removing = ["6.12.43+deb13-amd64", "6.12.43+deb13-cloud-amd64"];
+        assert_eq!(
+            names(apt_kernel_packages_for(
+                &linux,
+                "6.12.43+deb13-cloud-amd64",
+                &removing
+            )),
+            vec![
+                "linux-image-6.12.43+deb13-cloud-amd64",
+                "linux-headers-6.12.43+deb13-cloud-amd64",
+                "linux-headers-6.12.43+deb13-common",
+            ]
+        );
+        assert_eq!(
+            names(apt_kernel_packages_for(
+                &linux,
+                "6.12.48+deb13-amd64",
+                &["6.12.48+deb13-amd64"]
+            )),
+            vec![
+                "linux-image-6.12.48+deb13-amd64",
+                "linux-headers-6.12.48+deb13-amd64",
+                "linux-headers-6.12.48+deb13-common",
+            ]
+        );
+    }
+
+    const APT_LINUX_64K: &str = "ii \tlinux-image-6.8.0-45-generic\t1\nii \tlinux-headers-6.8.0-45-generic\t1\nii \tlinux-tools-6.8.0-45-generic\t1\nii \tlinux-image-6.8.0-45-generic-64k\t1\nii \tlinux-headers-6.8.0-45-generic-64k\t1\nii \tlinux-tools-6.8.0-45-generic-64k\t1\nii \tlinux-headers-6.8.0-45\t1\nii \tlinux-tools-6.8.0-45\t1\n";
+
+    #[test]
+    fn test_apt_kernel_packages_for_prefix_flavour() {
+        let linux = parse_linux_packages(APT_LINUX_64K);
+        assert_eq!(
+            names(apt_kernel_packages_for(
+                &linux,
+                "6.8.0-45-generic-64k",
+                &["6.8.0-45-generic-64k"]
+            )),
+            vec![
+                "linux-image-6.8.0-45-generic-64k",
+                "linux-headers-6.8.0-45-generic-64k",
+                "linux-tools-6.8.0-45-generic-64k",
+            ]
+        );
+        let removing = ["6.8.0-45-generic", "6.8.0-45-generic-64k"];
+        assert_eq!(
+            names(apt_kernel_packages_for(
+                &linux,
+                "6.8.0-45-generic-64k",
+                &removing
+            )),
+            vec![
+                "linux-image-6.8.0-45-generic-64k",
+                "linux-headers-6.8.0-45-generic-64k",
+                "linux-tools-6.8.0-45-generic-64k",
+                "linux-headers-6.8.0-45",
+                "linux-tools-6.8.0-45",
+            ]
+        );
+    }
+
+    const APT_LINUX_AWS: &str = "ii \tlinux-image-6.8.0-1015-aws\t1\nii \tlinux-modules-6.8.0-1015-aws\t1\nii \tlinux-headers-6.8.0-1015-aws\t1\nii \tlinux-tools-6.8.0-1015-aws\t1\nii \tlinux-aws-headers-6.8.0-1015\t1\nii \tlinux-aws-tools-6.8.0-1015\t1\nii \tlinux-image-6.8.0-1016-aws\t1\nii \tlinux-modules-6.8.0-1016-aws\t1\nii \tlinux-headers-6.8.0-1016-aws\t1\nii \tlinux-aws-headers-6.8.0-1016\t1\n";
+
+    #[test]
+    fn test_apt_kernel_packages_for_aws_shared() {
+        let linux = parse_linux_packages(APT_LINUX_AWS);
+        assert_eq!(
+            names(apt_kernel_packages_for(
+                &linux,
+                "6.8.0-1015-aws",
+                &["6.8.0-1015-aws"]
+            )),
+            vec![
+                "linux-image-6.8.0-1015-aws",
+                "linux-modules-6.8.0-1015-aws",
+                "linux-headers-6.8.0-1015-aws",
+                "linux-tools-6.8.0-1015-aws",
+                "linux-aws-headers-6.8.0-1015",
+                "linux-aws-tools-6.8.0-1015",
+            ]
+        );
+        let with_second = format!("{APT_LINUX_AWS}ii \tlinux-image-6.8.0-1015-aws-64k\t1\n");
+        let linux = parse_linux_packages(&with_second);
+        assert_eq!(
+            names(apt_kernel_packages_for(
+                &linux,
+                "6.8.0-1015-aws",
+                &["6.8.0-1015-aws"]
+            )),
+            vec![
+                "linux-image-6.8.0-1015-aws",
+                "linux-modules-6.8.0-1015-aws",
+                "linux-headers-6.8.0-1015-aws",
+                "linux-tools-6.8.0-1015-aws",
+            ]
+        );
+        let k = parse_apt_kernels(&parse_linux_packages(APT_LINUX_AWS));
+        assert_eq!(k[0], ("6.8.0-1015-aws".to_string(), Some(6 * 1024), false));
+        assert_eq!(k[1], ("6.8.0-1016-aws".to_string(), Some(4 * 1024), false));
+    }
+
+    const APT_LINUX_HWE: &str = "ii \tlinux-image-6.8.0-45-generic\t1\nii \tlinux-headers-6.8.0-45-generic\t1\nii \tlinux-image-6.8.0-45-lowlatency\t1\nii \tlinux-hwe-6.8-headers-6.8.0-45\t1\nii \tlinux-hwe-6.8-tools-6.8.0-45\t1\nii \tlinux-hwe-6.8-tools-common\t1\n";
+
+    #[test]
+    fn test_apt_kernel_packages_for_hwe_shared() {
+        let linux = parse_linux_packages(APT_LINUX_HWE);
+        assert_eq!(
+            names(apt_kernel_packages_for(
+                &linux,
+                "6.8.0-45-generic",
+                &["6.8.0-45-generic"]
+            )),
+            vec![
+                "linux-image-6.8.0-45-generic",
+                "linux-headers-6.8.0-45-generic"
+            ]
+        );
+        let removing = ["6.8.0-45-generic", "6.8.0-45-lowlatency"];
+        assert_eq!(
+            names(apt_kernel_packages_for(
+                &linux,
+                "6.8.0-45-lowlatency",
+                &removing
+            )),
+            vec![
+                "linux-image-6.8.0-45-lowlatency",
+                "linux-hwe-6.8-headers-6.8.0-45",
+                "linux-hwe-6.8-tools-6.8.0-45",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_autoremove_sim_excludes_shared_kernel_packages() {
+        let sim = "Remv linux-aws-headers-6.8.0-1015 [6.8.0-1015.16]\nRemv linux-hwe-6.8-tools-6.8.0-45 [6.8.0-45.45]\nRemv linux-hwe-6.8-tools-common [6.8.0-45.45]\nRemv libfoo1 [1.0]\n";
+        let names: Vec<String> = parse_autoremove_sim(sim)
+            .into_iter()
+            .map(|i| i.name)
+            .collect();
+        assert_eq!(names, vec!["linux-hwe-6.8-tools-common", "libfoo1"]);
+    }
+
+    #[test]
+    fn test_parse_remove_preview() {
+        let sim = "NOTE: This is only a simulation!\nRemv linux-image-6.8.0-45-generic [6.8.0-45.45]\nRemv linux-generic [6.8.0.45.45]\nRemv libbaz1:i386 [1.0]\n";
+        let requested = vec![
+            "libbaz1:i386".to_string(),
+            "linux-image-6.8.0-45-generic".to_string(),
+        ];
+        assert_eq!(
+            extra_removals(parse_remove_preview(sim), &requested, SourceType::Apt).unwrap(),
+            vec!["linux-generic"]
+        );
+        assert!(parse_remove_preview("").is_empty());
     }
 }

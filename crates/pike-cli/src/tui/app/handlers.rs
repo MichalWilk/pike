@@ -2,12 +2,25 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::widgets::TableState;
 
 use super::App;
-use crate::tui::types::{Action, ClickAction, FormField, HitState, InputMode, Tab, ViewState};
+use crate::tui::types::{
+    Action, CHECKBOX_WIDTH, ClickAction, FormField, HitState, InputMode, Tab, ViewState,
+};
 use pike_core::package::{Package, PackageUpdate, Repository};
 
 fn selected_from<'a, T>(items: &'a [T], filtered: &[usize], table: &TableState) -> Option<&'a T> {
     let &real_idx = filtered.get(table.selected()?)?;
     items.get(real_idx)
+}
+
+fn set_cursor_pointer(view: &mut ViewState, clickable: bool) {
+    if clickable != view.cursor_pointer {
+        view.cursor_pointer = clickable;
+        let shape = if clickable { "pointer" } else { "default" };
+        let _ = std::io::Write::write_all(
+            &mut std::io::stdout(),
+            format!("\x1b]22;{shape}\x07").as_bytes(),
+        );
+    }
 }
 
 enum HitResult {
@@ -21,7 +34,14 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return vec![Action::Quit];
         }
+        if self.pending_confirm.is_some() {
+            return self.handle_confirm_key(key);
+        }
+        let actions = self.dispatch_key(key, view);
+        self.intercept_all(actions)
+    }
 
+    fn dispatch_key(&mut self, key: KeyEvent, view: &mut ViewState) -> Vec<Action> {
         match self.input_mode {
             InputMode::Editing => self.handle_key_editing(key, view),
             InputMode::Normal => self.handle_key_normal(key, view),
@@ -81,7 +101,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') => vec![Action::Quit],
 
-            KeyCode::Char(c @ '1'..='4') => {
+            KeyCode::Char(c @ '1'..='5') => {
                 let idx = (c as usize) - ('1' as usize);
                 self.switch_tab(Tab::ALL[idx]);
                 vec![]
@@ -122,6 +142,7 @@ impl App {
             Tab::Installed => self.handle_installed_key(key, view),
             Tab::Updates => self.handle_updates_key(key, view),
             Tab::Repos => self.handle_repos_key(key, view),
+            Tab::Cleanup => self.handle_cleanup_key(key, view),
             Tab::Settings => self.handle_settings_key(key, view),
             Tab::About => match key.code {
                 KeyCode::Enter => {
@@ -185,7 +206,6 @@ impl App {
                 }
                 vec![]
             }
-            KeyCode::Char('A') => vec![Action::Autoremove],
             KeyCode::Char('r') => vec![Action::RefreshInstalled],
             _ => vec![],
         }
@@ -259,6 +279,54 @@ impl App {
             }
             KeyCode::Char('r') => vec![Action::RefreshRepos],
             _ => vec![],
+        }
+    }
+
+    fn handle_cleanup_key(&mut self, key: KeyEvent, view: &mut ViewState) -> Vec<Action> {
+        self.last_clean_ok = None;
+        match key.code {
+            KeyCode::Char('/') => {
+                self.input_mode = InputMode::Editing;
+                vec![]
+            }
+            KeyCode::Char('s') => {
+                self.cycle_source_filter(view);
+                vec![]
+            }
+            KeyCode::Char(' ' | 'e') => {
+                self.toggle_selected_cleanup(view);
+                vec![]
+            }
+            KeyCode::Char('a') => {
+                let filtered = self.cleanup_filtered_indices();
+                let all_selected = filtered.iter().all(|i| self.cleanup_selected.contains(i));
+                for i in filtered {
+                    if all_selected {
+                        self.cleanup_selected.remove(&i);
+                    } else {
+                        self.cleanup_selected.insert(i);
+                    }
+                }
+                vec![]
+            }
+            KeyCode::Char('c') => {
+                let items: Vec<_> = self.selected_cleanup_items().cloned().collect();
+                if self.cleanup.loading || items.is_empty() {
+                    vec![]
+                } else {
+                    vec![Action::Clean(items)]
+                }
+            }
+            KeyCode::Char('r') => vec![Action::RefreshCleanup],
+            _ => vec![],
+        }
+    }
+
+    fn toggle_selected_cleanup(&mut self, view: &ViewState) {
+        self.last_clean_ok = None;
+        let filtered = self.cleanup_filtered_indices();
+        if let Some(&real) = view.cleanup_table.selected().and_then(|s| filtered.get(s)) {
+            self.toggle_cleanup_selection(real);
         }
     }
 
@@ -411,6 +479,23 @@ impl App {
         hit: &HitState,
         view: &mut ViewState,
     ) -> Vec<Action> {
+        if self.pending_confirm.is_some() {
+            let target = match self.hit_test(view, hit, event.column, event.row) {
+                HitResult::Target(ClickAction::Key(code)) => Some(code),
+                _ => None,
+            };
+            return match (event.kind, target) {
+                (MouseEventKind::Down(MouseButton::Left), Some(code)) => {
+                    self.handle_confirm_key(KeyEvent::from(code))
+                }
+                (MouseEventKind::Moved, _) => {
+                    view.hover_row = None;
+                    set_cursor_pointer(view, target.is_some());
+                    vec![]
+                }
+                _ => vec![],
+            };
+        }
         match event.kind {
             MouseEventKind::ScrollDown => {
                 self.move_selection(1, view);
@@ -421,7 +506,8 @@ impl App {
                 vec![]
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                self.handle_click(hit, event.column, event.row, view)
+                let actions = self.handle_click(hit, event.column, event.row, view);
+                self.intercept_all(actions)
             }
             MouseEventKind::Moved => {
                 self.update_hover(view, hit, event.column, event.row);
@@ -445,11 +531,16 @@ impl App {
                 vec![]
             }
             HitResult::Target(ClickAction::Key(code)) => {
-                let key = KeyEvent::from(code);
-                self.handle_key(key, view)
+                self.dispatch_key(KeyEvent::from(code), view)
             }
             HitResult::TableRow(idx) => {
                 view.table_for(self.tab).select(Some(idx));
+                if self.tab == Tab::Cleanup
+                    && let Some(zone) = &hit.table_zone
+                    && col < zone.x_start + CHECKBOX_WIDTH
+                {
+                    self.toggle_selected_cleanup(view);
+                }
                 vec![]
             }
             HitResult::None => vec![],
@@ -479,14 +570,7 @@ impl App {
 
     fn update_cursor_shape(&self, view: &mut ViewState, hit: &HitState, col: u16, row: u16) {
         let clickable = !matches!(self.hit_test(view, hit, col, row), HitResult::None);
-        if clickable != view.cursor_pointer {
-            view.cursor_pointer = clickable;
-            let shape = if clickable { "pointer" } else { "default" };
-            let _ = std::io::Write::write_all(
-                &mut std::io::stdout(),
-                format!("\x1b]22;{shape}\x07").as_bytes(),
-            );
-        }
+        set_cursor_pointer(view, clickable);
     }
 
     fn update_hover(&self, view: &mut ViewState, hit: &HitState, col: u16, row: u16) {
@@ -502,6 +586,7 @@ impl App {
             Tab::Installed => self.installed_filtered_indices().len(),
             Tab::Updates => self.updates_filtered_indices().len(),
             Tab::Repos => self.repos_filtered_indices().len(),
+            Tab::Cleanup => self.cleanup_filtered_indices().len(),
             Tab::Settings => self.settings_count(),
             Tab::About => crate::tui::ui::about::ABOUT_URLS.len(),
         };
@@ -516,5 +601,132 @@ impl App {
         if self.tab == Tab::Settings {
             self.settings_skip_groups(delta, view);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    use pike_core::config::Config;
+    use pike_core::package::{CleanupItem, CleanupKind, CleanupScan, SourceType};
+
+    use crate::tui::types::TableClickZone;
+
+    fn cleanup_app() -> (App, ViewState) {
+        let mut app = App::new(
+            Config::default(),
+            Vec::new(),
+            vec![SourceType::Dnf, SourceType::Flatpak],
+        );
+        app.tab = Tab::Cleanup;
+        let mut view = ViewState::new(false);
+        let item = |source, kind, name: &str| CleanupItem {
+            source,
+            kind,
+            name: name.into(),
+            version: String::new(),
+            size: Some(10),
+            arch: None,
+        };
+        let scan = CleanupScan {
+            items: vec![
+                item(SourceType::Dnf, CleanupKind::Orphan, "libfoo.x86_64"),
+                item(SourceType::Flatpak, CleanupKind::UnusedRuntime, "org.a"),
+                item(SourceType::Dnf, CleanupKind::Cache, "/var/cache/dnf"),
+                item(SourceType::Flatpak, CleanupKind::UnusedRuntime, "org.b"),
+            ],
+            failed: Vec::new(),
+        };
+        let keep = app.config.cleanup.keep_kernels();
+        app.set_cleanup(scan, keep, &mut view);
+        (app, view)
+    }
+
+    fn press(app: &mut App, view: &mut ViewState, c: char) -> Vec<Action> {
+        app.handle_key(KeyEvent::from(KeyCode::Char(c)), view)
+    }
+
+    #[test]
+    fn test_cleanup_key_ignored_while_loading() {
+        let (mut app, mut view) = cleanup_app();
+        app.cleanup.loading = true;
+        assert!(press(&mut app, &mut view, 'c').is_empty());
+
+        app.cleanup.loading = false;
+        assert!(press(&mut app, &mut view, 'c').is_empty());
+        assert_eq!(app.pending_clean_items().map(<[_]>::len), Some(4));
+
+        let actions = app.handle_key(KeyEvent::from(KeyCode::Enter), &mut view);
+        assert!(matches!(actions.as_slice(), [Action::Clean(items)] if items.len() == 4));
+        assert!(app.pending_confirm.is_none());
+    }
+
+    #[test]
+    fn test_cleanup_filtered_row_maps_to_real_item() {
+        let (mut app, mut view) = cleanup_app();
+        app.cleanup_selected.clear();
+        app.cleanup.source_filter = Some(SourceType::Flatpak);
+        view.cleanup_table.select(Some(0));
+        press(&mut app, &mut view, ' ');
+        assert_eq!(app.cleanup_selected, HashSet::from([1]));
+
+        press(&mut app, &mut view, 'a');
+        assert_eq!(app.cleanup_selected, HashSet::from([1, 3]));
+
+        press(&mut app, &mut view, 'a');
+        assert!(app.cleanup_selected.is_empty());
+    }
+
+    #[test]
+    fn test_cleanup_action_clears_clean_result() {
+        let (mut app, mut view) = cleanup_app();
+        app.last_clean_ok = Some(false);
+        press(&mut app, &mut view, 'e');
+        assert_eq!(app.last_clean_ok, None);
+        assert!(!app.cleanup_selected.contains(&0));
+
+        app.last_clean_ok = Some(true);
+        press(&mut app, &mut view, '1');
+        assert_eq!(app.last_clean_ok, None);
+    }
+
+    #[test]
+    fn test_cleanup_checkbox_click_toggles_filtered_row() {
+        let (mut app, mut view) = cleanup_app();
+        app.cleanup_selected.clear();
+        app.cleanup.source_filter = Some(SourceType::Flatpak);
+        let hit = HitState {
+            click_targets: Vec::new(),
+            table_zone: Some(TableClickZone {
+                y_start: 5,
+                x_start: 2,
+                width: 80,
+                visible_rows: 10,
+                item_count: 2,
+            }),
+        };
+        let click = |column| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row: 6,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        app.handle_mouse(click(2 + CHECKBOX_WIDTH), &hit, &mut view);
+        assert_eq!(view.cleanup_table.selected(), Some(1));
+        assert!(app.cleanup_selected.is_empty());
+
+        app.handle_mouse(click(2 + CHECKBOX_WIDTH - 1), &hit, &mut view);
+        assert_eq!(app.cleanup_selected, HashSet::from([3]));
+
+        app.input_mode = InputMode::Editing;
+        app.cleanup.filter = "org".into();
+        app.last_clean_ok = Some(true);
+        app.handle_mouse(click(2 + CHECKBOX_WIDTH - 1), &hit, &mut view);
+        assert!(app.cleanup_selected.is_empty());
+        assert_eq!(app.cleanup.filter, "org");
+        assert_eq!(app.last_clean_ok, None);
     }
 }

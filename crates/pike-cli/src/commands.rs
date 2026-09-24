@@ -4,11 +4,14 @@ use std::io::{BufRead, IsTerminal, Write};
 use owo_colors::OwoColorize;
 use pike_core::config::IconStyle;
 use pike_core::manager::PackageManager;
-use pike_core::package::{PackageUpdate, RepoMethod, SourceType, StatusSummary};
+use pike_core::package::{
+    CleanupItem, CleanupKind, PackageUpdate, RepoMethod, SourceType, StatusSummary,
+};
 use pike_core::util::truncate_str;
 use rust_i18n::t;
 
 use crate::RepoCommands;
+use crate::format::{cleanup_version, format_size, items_summary, split_clean_preview};
 use crate::ipc::{self, DaemonRequest, DaemonResponse, notify_daemon_recheck, try_daemon_request};
 
 const WAYBAR_MAX_PER_SOURCE: usize = 3;
@@ -122,24 +125,172 @@ pub async fn remove(
     Ok(())
 }
 
-pub async fn autoremove(manager: &PackageManager) -> anyhow::Result<()> {
-    let action_msg = t!("cli.autoremove-source");
-    let mut had_error = false;
-    for st in &manager.active_source_types() {
-        let name = st.display_name();
-        eprintln!("  [{}] {action_msg}", name.cyan());
-        if let Err(e) = manager.autoremove_source(*st).await {
-            eprintln!("  [{}] {}", name.red(), e);
-            had_error = true;
+#[derive(Default)]
+pub struct CleanOptions {
+    pub orphans: bool,
+    pub kernels: bool,
+    pub cache: bool,
+    pub all: bool,
+    pub source: Option<String>,
+    pub dry_run: bool,
+    pub yes: bool,
+}
+
+fn wanted_kinds(opts: &CleanOptions) -> Vec<CleanupKind> {
+    let default = !opts.orphans && !opts.kernels && !opts.cache;
+    let mut kinds = Vec::new();
+    if default || opts.orphans {
+        kinds.push(CleanupKind::Orphan);
+        kinds.push(CleanupKind::UnusedRuntime);
+    }
+    if opts.all || opts.kernels {
+        kinds.push(CleanupKind::OldKernel);
+    }
+    if default || opts.cache {
+        kinds.push(CleanupKind::Cache);
+    }
+    kinds
+}
+
+fn kind_key(kind: CleanupKind) -> &'static str {
+    match kind {
+        CleanupKind::Orphan => "cli.clean-group-orphan",
+        CleanupKind::UnusedRuntime => "cli.clean-group-unusedruntime",
+        CleanupKind::OldKernel => "cli.clean-group-oldkernel",
+        CleanupKind::Cache => "cli.clean-group-cache",
+    }
+}
+
+fn print_cleanup_list(items: &[CleanupItem]) {
+    let mut current: Option<(CleanupKind, SourceType)> = None;
+    for item in items {
+        if current != Some((item.kind, item.source)) {
+            current = Some((item.kind, item.source));
+            println!(
+                "{} ({})",
+                t!(kind_key(item.kind)).bold(),
+                item.source.display_name()
+            );
+        }
+        let size = item.size.map(format_size).unwrap_or_default();
+        println!(
+            "  {:<44} {:<28} {:>10}",
+            item.name,
+            cleanup_version(item),
+            size
+        );
+    }
+    println!();
+    println!("{}", t!("cli.clean-total", summary = items_summary(items)));
+}
+
+pub async fn clean(manager: &PackageManager, opts: CleanOptions, json: bool) -> anyhow::Result<()> {
+    if json && opts.yes {
+        anyhow::bail!("{}", t!("cli.clean-json-yes"));
+    }
+    let source_filter = parse_source_filter(opts.source.as_deref())?;
+    if let Some(st) = source_filter
+        && !manager.active_source_types().contains(&st)
+    {
+        anyhow::bail!(
+            "{}",
+            t!("cli.source-not-active", source = st.display_name())
+        );
+    }
+    if !json {
+        print_scanning(manager, source_filter);
+    }
+
+    let kinds = wanted_kinds(&opts);
+    let scan = manager.list_cleanup(source_filter, &kinds).await;
+    for (st, err) in &scan.failed {
+        eprintln!(
+            "  [{}] {}",
+            st.display_name().red(),
+            t!("cli.clean-scan-failed", err = err)
+        );
+    }
+    let items = scan.items;
+    let incomplete = !scan.failed.is_empty();
+
+    if items.is_empty() && incomplete {
+        anyhow::bail!("{}", t!("cli.clean-scan-incomplete"));
+    }
+    if json {
+        print_json(&items)?;
+    } else if items.is_empty() {
+        eprintln!("  {}", t!("cli.clean-nothing").green());
+    } else {
+        eprintln!();
+        print_cleanup_list(&items);
+        print_clean_preview(manager, &items).await;
+        if !opts.dry_run && confirm_clean(opts.yes)? {
+            run_clean(manager, &items).await?;
         }
     }
-    eprintln!();
-    if had_error {
-        anyhow::bail!("one or more sources failed to autoremove");
+    if incomplete {
+        anyhow::bail!("{}", t!("cli.clean-scan-incomplete"));
     }
-    let done = t!("cli.cleanup-complete");
-    eprintln!("  {}", done.green());
+    Ok(())
+}
+
+fn print_scanning(manager: &PackageManager, source_filter: Option<SourceType>) {
+    let msg = t!("cli.clean-scanning");
+    for st in source_filter.map_or_else(|| manager.active_source_types(), |st| vec![st]) {
+        eprintln!("  [{}] {msg}", st.display_name().cyan());
+    }
+}
+
+async fn print_clean_preview(manager: &PackageManager, items: &[CleanupItem]) {
+    let preview = manager.preview_clean(items).await;
+    let (extras, errors) = split_clean_preview(&preview);
+    if !extras.is_empty() {
+        eprintln!();
+        eprintln!("{}", t!("cli.clean-also-removed").yellow().bold());
+    }
+    for (st, pkg) in extras {
+        eprintln!("  [{}] {pkg}", st.display_name().yellow());
+    }
+    for (st, e) in errors {
+        eprintln!(
+            "  [{}] {}",
+            st.display_name().red(),
+            t!("cli.clean-preview-failed", err = e)
+        );
+    }
+}
+
+fn confirm_clean(yes: bool) -> anyhow::Result<bool> {
+    if yes {
+        Ok(true)
+    } else if std::io::stdin().is_terminal() {
+        let confirmed = prompt_yes_no(&t!("cli.clean-confirm"))?;
+        if !confirmed {
+            eprintln!("  {}", t!("cli.clean-cancelled").dimmed());
+        }
+        Ok(confirmed)
+    } else {
+        anyhow::bail!("{}", t!("cli.clean-needs-yes"))
+    }
+}
+
+async fn run_clean(manager: &PackageManager, items: &[CleanupItem]) -> anyhow::Result<()> {
+    let done = t!("cli.clean-source-done");
+    let results = manager.clean(items).await;
+    let mut had_error = false;
+    for (st, result) in results {
+        match result {
+            Ok(()) => eprintln!("  [{}] {done}", st.display_name().cyan()),
+            Err(e) => {
+                eprintln!("  [{}] {}", st.display_name().red(), e);
+                had_error = true;
+            }
+        }
+    }
     notify_daemon_recheck();
+    if had_error {
+        anyhow::bail!("{}", t!("cli.clean-failed"));
+    }
     Ok(())
 }
 
@@ -746,4 +897,51 @@ pub fn waybar_continuous(style: IconStyle) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_wanted_kinds_skips_kernels_by_default() {
+        let kinds = |orphans, kernels, cache, all| {
+            wanted_kinds(&CleanOptions {
+                orphans,
+                kernels,
+                cache,
+                all,
+                ..Default::default()
+            })
+        };
+        assert_eq!(
+            kinds(false, false, false, false),
+            vec![
+                CleanupKind::Orphan,
+                CleanupKind::UnusedRuntime,
+                CleanupKind::Cache
+            ]
+        );
+        assert_eq!(
+            kinds(false, false, false, true),
+            vec![
+                CleanupKind::Orphan,
+                CleanupKind::UnusedRuntime,
+                CleanupKind::OldKernel,
+                CleanupKind::Cache
+            ]
+        );
+        assert_eq!(
+            kinds(true, false, false, false),
+            vec![CleanupKind::Orphan, CleanupKind::UnusedRuntime]
+        );
+        assert_eq!(
+            kinds(false, true, false, false),
+            vec![CleanupKind::OldKernel]
+        );
+        assert_eq!(
+            kinds(false, true, true, false),
+            vec![CleanupKind::OldKernel, CleanupKind::Cache]
+        );
+    }
 }

@@ -65,6 +65,22 @@ pub(super) fn render_settings(
                 let label = t!("tui.settings.notifications");
                 toggle_row(&label, app.config.daemon.notify, hover == Some(idx))
             }
+            SettingsRow::ConfirmToggle => {
+                let label = t!("tui.settings.confirm-actions");
+                toggle_row(
+                    &label,
+                    app.config.display.confirm_actions,
+                    hover == Some(idx),
+                )
+            }
+            SettingsRow::KeepKernels => {
+                let label = t!("tui.settings.keep-kernels");
+                value_row(
+                    &label,
+                    app.config.cleanup.keep_kernels().to_string(),
+                    hover == Some(idx),
+                )
+            }
         })
         .collect();
 

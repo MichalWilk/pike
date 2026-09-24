@@ -4,7 +4,7 @@ Unified package manager for Linux - wraps **dnf**, **apt**, and **flatpak** into
 
 - Install, remove, search, and update across dnf, apt, and flatpak with one command
 - Background daemon with periodic update checks and desktop notifications
-- Interactive TUI with 6 tabs: Search, Installed, Updates, Repos, Settings, About
+- Interactive TUI with 7 tabs: Search, Installed, Updates, Repos, Cleanup, Settings, About
 - Waybar integration with push updates from daemon (no polling)
 - Localization (English, Polish) with CLDR plural rules, configurable in TUI or config file
 - Unix socket IPC, SQLite update cache, XDG-compliant paths
@@ -35,7 +35,7 @@ The apt backend uses `apt-get`, `apt-cache`, and `dpkg-query` for maximum compat
 | update (single, multi, all) | yes | yes | yes |
 | check for updates | yes | yes | yes |
 | list installed | yes | yes | yes |
-| autoremove | yes | yes | yes |
+| clean | orphans, old kernels, cache | orphans, old kernels, cache | unused runtimes |
 | purge (remove config/data) | - | yes | yes |
 | repo list | yes | yes | yes |
 | repo add | repofile, copr, baseurl, rpm | ppa, baseurl | remote |
@@ -116,7 +116,18 @@ pike update                        # update all packages
 pike update -S dnf                 # update all dnf packages only
 pike update bash                   # update single package
 pike update bash vim               # update multiple packages
-pike autoremove                    # remove orphaned deps & unused runtimes
+pike clean                         # list orphans, unused runtimes, caches; confirm before removing
+pike clean --dry-run               # only list (also shows packages removed as dependencies)
+pike clean --orphans               # only orphaned packages and unused flatpak runtimes
+pike clean --kernels               # only old kernels
+pike clean --cache                 # only package manager caches
+pike clean --all                   # everything, including old kernels
+pike clean -S dnf                  # filter by source (dnf, apt, or flatpak)
+pike clean -y                      # skip confirmation
+pike --json clean                  # list as JSON (preview only, cannot be combined with -y)
+pike autoremove                    # subcommand equivalent to `pike clean --orphans`
+pike autoremove -y                 # same as `pike clean --orphans -y`
+pike autoremove --dry-run -S dnf   # also accepts --dry-run and -S/--source
 pike check                         # check for updates (caches results)
 pike check --notify                # check + notify if updates found
 pike check --notify-always         # check + notify regardless of result
@@ -136,7 +147,7 @@ pike tui                           # interactive terminal UI
 
 **GPG key import:** after a distribution upgrade or when a new repository is added, dnf may need to import new signing keys before it can refresh metadata. When run from a terminal, `pike check` detects the pending keys, lists them, and asks whether to import them (approval happens in dnf's own interactive prompt). When declined, or run non-interactively (daemon, `--waybar`, `--json`), pike never blocks: it skips the affected repositories and the daemon logs a reminder to run `pike check` in a terminal.
 
-Most commands have short aliases: `s` (search), `i` (install), `rm` (remove), `up` (update), `ar` (autoremove), `ck` (check), `ls` (list), `st` (status), `ui` (tui).
+Most commands have short aliases: `s` (search), `i` (install), `rm` (remove), `up` (update), `ar` (autoremove = clean --orphans), `ck` (check), `ls` (list), `st` (status), `ui` (tui).
 
 ### Repository management
 
@@ -160,20 +171,25 @@ pike repo remove flathub-beta -S flatpak
 
 Global flags: `--json` (machine-readable output), `--verbose` (debug logging).
 
+`pike clean` covers orphaned packages, unused flatpak runtimes and package caches; old kernels are included only with `--kernels` or `--all` (the TUI Cleanup tab lists them too but does not pre-select them). `--orphans`, `--kernels` and `--cache` can be combined. `pike autoremove` is the orphans-only subset. Before asking for confirmation, both print any extra packages the package manager would remove as dependencies. Without a terminal (scripts, cron, Waybar on-click) they cannot prompt and require `-y`. `-S` must name an enabled, installed source. If any source could not be scanned, the command still lists (and cleans) what the other sources found but exits with code 1.
+
 ## Interactive TUI
 
-Launch with `pike tui` (or `pike ui`). Six tabs:
+Launch with `pike tui` (or `pike ui`). Seven tabs:
 
 | Tab | Key | Features |
 |-----|-----|----------|
 | Search | `1` | `/` to type query, `i` install, `d` remove, `s` cycle source filter, `r` re-search |
-| Installed | `2` | `/` to filter, `d` remove, `A` autoremove, `s` cycle source, `r` refresh |
+| Installed | `2` | `/` to filter, `d` remove, `s` cycle source, `r` refresh |
 | Updates | `3` | `/` to filter, `u` update selected, `U` update all, `s` cycle source, `r` refresh |
 | Repos | `4` | `/` to filter, `e` toggle enable/disable, `a` add (wizard), `d` delete, `s` cycle source, `r` refresh |
+| Cleanup | `5` | `e`/`space` select, `a` all, `c` clean, `/` filter, `s` cycle source, `r` refresh |
 | Settings | `9` | `e` toggle option (auto-saves) |
 | About | `0` | Project info, `Enter` to open repo URL |
 
 Navigation: `j`/`k` or arrows, `Tab`/`Shift+Tab` cycle tabs, mouse scroll/click, `q` quit.
+
+Install, remove, clean and repo changes (add, delete, enable/disable) open a confirmation dialog: `Enter` or `y` confirms, `q`, `Esc` or `n` cancel the confirmation window; `q` quits only when no window or input field is active. While it is open, the footer shows only the confirm and cancel buttons, which also work with the mouse. For clean, the dialog also lists packages that would be removed as dependencies. Updates are not confirmed. Turn the dialog off with "Confirm actions" in Settings or `confirm_actions = false` under `[display]`.
 
 The repo add wizard (`a` on Repos tab) guides through source selection, then method selection (for dnf: .repo file, COPR, base URL, RPM package), then shows method-specific input fields.
 
@@ -192,6 +208,7 @@ The repo add wizard (`a` on Repos tab) guides through source selection, then met
 
 [display]
 # language = "auto"  # "auto", "en", or "pl"
+# confirm_actions = true  # confirmation dialog in the TUI before install, remove, clean and repo changes
 
 [display.architectures]
 # dnf = ["x86_64", "noarch"]
@@ -203,13 +220,16 @@ The repo add wizard (`a` on Repos tab) guides through source selection, then met
 [daemon]
 # interval = 600    # seconds between update checks (minimum: 10)
 # notify = true     # desktop notifications when updates are found
+
+[cleanup]
+# keep_kernels = 2  # number of newest kernels to keep (the running kernel is always kept)
 ```
 
 See [`config.example.toml`](config.example.toml) for full documentation. Changes to daemon settings are propagated to a running daemon immediately.
 
 ### Privilege escalation
 
-dnf and apt operations (`install`, `remove`, `update`, `autoremove`, repo management) require root. Pike escalates privileges using a configurable method:
+dnf and apt operations (`install`, `remove`, `update`, `clean`, repo management) require root. Pike escalates privileges using a configurable method:
 
 | Method | Behavior |
 |--------|----------|
@@ -352,7 +372,7 @@ just release              # release build
 
 ### Integration tests
 
-Integration tests run pike inside Podman containers (Fedora for dnf, Ubuntu for apt). Each backend is tested for search, list, check, status, waybar, repo management, install/remove (single and multi-package), purge, update (single, multi, all), and autoremove.
+Integration tests run pike inside Podman containers (Fedora for dnf, Ubuntu for apt). Each backend is tested for search, list, check, status, waybar, repo management, install/remove (single and multi-package), purge, update (single, multi, all), and clean.
 
 ```bash
 just test-integration     # run all backends (dnf + apt)

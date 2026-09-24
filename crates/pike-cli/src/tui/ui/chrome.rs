@@ -10,7 +10,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::tui::app::App;
 use crate::tui::types::{ClickAction, ClickTarget, HitState, InputMode, Tab, ViewState};
 
-use super::{ACCENT, FG, FG_DIM, FG_FAINT, FG_SUBTLE, RED, format_count_line};
+use super::{ACCENT, FG, FG_DIM, FG_FAINT, FG_SUBTLE, GREEN, RED, format_count_line};
 
 struct ButtonDef {
     key: &'static str,
@@ -37,7 +37,13 @@ pub(super) fn render_title(frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(title), area);
 }
 
-const LEFT_TABS: [Tab; 4] = [Tab::Search, Tab::Installed, Tab::Updates, Tab::Repos];
+const LEFT_TABS: [Tab; 5] = [
+    Tab::Search,
+    Tab::Installed,
+    Tab::Updates,
+    Tab::Repos,
+    Tab::Cleanup,
+];
 const RIGHT_TABS: [Tab; 2] = [Tab::Settings, Tab::About];
 
 fn tab_label(tab: Tab, app: &App) -> (String, String) {
@@ -169,6 +175,10 @@ pub(super) fn render_context_bar(frame: &mut Frame, app: &App, area: Rect) {
             Some(line) => line,
             None => return,
         },
+        Tab::Cleanup => match cleanup_context_line(app) {
+            Some(line) => line,
+            None => return,
+        },
         Tab::Settings | Tab::About => return,
     };
 
@@ -217,6 +227,11 @@ pub(super) fn render_footer(
         ));
     }
 
+    frame.render_widget(Paragraph::new(Line::from(left_spans)), area);
+
+    let Some(quit_btn) = quit_btn else {
+        return;
+    };
     let quit_text = format!("{} {}", quit_btn.key, quit_btn.label);
     let quit_width = quit_text.width() as u16;
     let quit_x = area.x + area.width.saturating_sub(quit_width);
@@ -231,10 +246,60 @@ pub(super) fn render_footer(
         action: ClickAction::Key(quit_btn.code),
     });
 
-    frame.render_widget(Paragraph::new(Line::from(left_spans)), area);
-
     let right_area = Rect::new(quit_x, area.y, quit_width, 1);
     frame.render_widget(Paragraph::new(right_line), right_area);
+}
+
+fn cleanup_context_line(app: &App) -> Option<Line<'static>> {
+    let mut spans = Vec::new();
+    if let Some(ok) = app.last_clean_ok {
+        let (text, color) = if ok {
+            (t!("tui.status.cleanup-complete"), GREEN)
+        } else {
+            (t!("tui.status.cleanup-error"), RED)
+        };
+        spans.push(Span::styled(text.to_string(), Style::default().fg(color)));
+    }
+    if !app.cleanup.loading && !app.cleanup.items.is_empty() {
+        if !spans.is_empty() {
+            spans.push(Span::styled("  \u{00b7}  ", Style::default().fg(FG_FAINT)));
+        }
+        spans.push(Span::styled(
+            cleanup_selection_text(app),
+            Style::default().fg(FG_DIM),
+        ));
+    }
+    if spans.is_empty() {
+        None
+    } else {
+        Some(Line::from(spans))
+    }
+}
+
+fn cleanup_selection_text(app: &App) -> String {
+    let (count, bytes) = app
+        .selected_cleanup_items()
+        .fold((0, 0), |(n, b), i| (n + 1, b + i.size.unwrap_or(0)));
+    let size = crate::format::format_size(bytes);
+    let total = app.cleanup.items.len();
+    let shown = app.cleanup_filtered_indices().len();
+    if shown < total {
+        t!(
+            "tui.context.cleanup-selected-filtered",
+            shown = shown,
+            total = total,
+            count = count,
+            size = size
+        )
+    } else {
+        t!(
+            "tui.context.cleanup-selected",
+            found = total,
+            count = count,
+            size = size
+        )
+    }
+    .to_string()
 }
 
 fn repos_context_line(app: &App) -> Option<Line<'static>> {
@@ -273,17 +338,28 @@ fn repos_context_line(app: &App) -> Option<Line<'static>> {
     )))
 }
 
-fn footer_buttons(app: &App, view: &ViewState) -> (Vec<ButtonDef>, ButtonDef) {
+fn footer_buttons(app: &App, view: &ViewState) -> (Vec<ButtonDef>, Option<ButtonDef>) {
+    if app.pending_confirm.is_some() {
+        return (confirm_buttons(), None);
+    }
     let quit = ButtonDef::new("q", "tui.button.quit", KeyCode::Char('q'));
     let actions = match app.tab {
         Tab::Search => search_buttons(app, view),
         Tab::Installed => installed_buttons(app),
         Tab::Updates => updates_buttons(app),
         Tab::Repos => repos_buttons(app),
+        Tab::Cleanup => cleanup_buttons(app),
         Tab::Settings => settings_buttons(),
         Tab::About => vec![ButtonDef::new("↵", "tui.about.open-link", KeyCode::Enter)],
     };
-    (actions, quit)
+    (actions, Some(quit))
+}
+
+fn confirm_buttons() -> Vec<ButtonDef> {
+    vec![
+        ButtonDef::new("↵", "tui.button.confirm", KeyCode::Enter),
+        ButtonDef::new("Esc", "tui.button.cancel", KeyCode::Esc),
+    ]
 }
 
 fn source_filter_button(app: &App) -> ButtonDef {
@@ -359,7 +435,6 @@ fn installed_buttons(app: &App) -> Vec<ButtonDef> {
         ButtonDef::new("/", "tui.button.filter", KeyCode::Char('/')),
         source_filter_button(app),
         ButtonDef::new("d", "tui.button.remove", KeyCode::Char('d')),
-        ButtonDef::new("A", "tui.button.autoremove", KeyCode::Char('A')),
         ButtonDef::new("r", "tui.button.refresh", KeyCode::Char('r')),
     ]
 }
@@ -430,6 +505,35 @@ fn repos_form_buttons(app: &App) -> Vec<ButtonDef> {
         btns.push(ButtonDef::new("↵", "tui.button.confirm", KeyCode::Enter));
     }
 
+    btns
+}
+
+fn cleanup_buttons(app: &App) -> Vec<ButtonDef> {
+    if app.input_mode == InputMode::Editing {
+        return editing_buttons(false);
+    }
+    let mut btns = vec![
+        ButtonDef::new("/", "tui.button.filter", KeyCode::Char('/')),
+        source_filter_button(app),
+    ];
+    if !app.cleanup.items.is_empty() {
+        btns.push(ButtonDef::new(
+            "e/␣",
+            "tui.button.select",
+            KeyCode::Char('e'),
+        ));
+        btns.push(ButtonDef::new(
+            "a",
+            "tui.button.select-all",
+            KeyCode::Char('a'),
+        ));
+        btns.push(ButtonDef::new("c", "tui.button.clean", KeyCode::Char('c')));
+    }
+    btns.push(ButtonDef::new(
+        "r",
+        "tui.button.refresh",
+        KeyCode::Char('r'),
+    ));
     btns
 }
 

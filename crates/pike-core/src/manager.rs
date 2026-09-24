@@ -1,9 +1,13 @@
 use std::collections::BTreeMap;
 
+use crate::cleanup::{clean_items, preview_cleanup, scan_cleanup};
 use crate::config::Config;
 use crate::db::Database;
 use crate::error::PikeError;
-use crate::package::{Package, PackageUpdate, RepoMethod, Repository, SourceType, StatusSummary};
+use crate::package::{
+    CleanupItem, CleanupKind, CleanupScan, Package, PackageUpdate, RepoMethod, Repository,
+    SourceType, StatusSummary,
+};
 use crate::source::{PackageSource, PendingGpgKey, create_sources};
 use crate::util::{filter_and_sort_packages, gather, sort_by_source};
 
@@ -120,10 +124,6 @@ impl PackageManager {
         Ok(result)
     }
 
-    pub async fn autoremove_source(&self, source: SourceType) -> Result<(), PikeError> {
-        self.get_source(source)?.autoremove().await
-    }
-
     pub async fn update_package(&self, package: &str) -> Result<(), PikeError> {
         for s in &self.sources {
             match s.update(package).await {
@@ -158,6 +158,30 @@ impl PackageManager {
 
     pub async fn update_all_source(&self, source: SourceType) -> Result<(), PikeError> {
         self.get_source(source)?.update_all().await
+    }
+
+    pub async fn list_cleanup(
+        &self,
+        source: Option<SourceType>,
+        kinds: &[CleanupKind],
+    ) -> CleanupScan {
+        scan_cleanup(
+            &self.filtered_sources(source),
+            kinds,
+            self.config.cleanup.keep_kernels(),
+        )
+        .await
+    }
+
+    pub async fn preview_clean(
+        &self,
+        items: &[CleanupItem],
+    ) -> Vec<(SourceType, Result<Vec<String>, PikeError>)> {
+        preview_cleanup(&self.filtered_sources(None), items).await
+    }
+
+    pub async fn clean(&self, items: &[CleanupItem]) -> Vec<(SourceType, Result<(), PikeError>)> {
+        clean_items(&self.filtered_sources(None), items).await
     }
 
     pub async fn check_updates(&self) -> Result<Vec<PackageUpdate>, PikeError> {
