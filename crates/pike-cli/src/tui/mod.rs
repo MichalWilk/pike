@@ -79,6 +79,7 @@ async fn run_loop(
     app.refresh_daemon_status();
     async_ops::spawn_check_updates(app, &tx, active_sources);
     async_ops::spawn_list_installed(app, &tx, active_sources);
+    app.init_accent();
 
     while app.running {
         process_async_results(app, &mut rx, manager, &tx, active_sources, &mut view);

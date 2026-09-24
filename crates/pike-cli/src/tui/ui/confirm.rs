@@ -9,7 +9,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::format::split_clean_preview;
 use crate::tui::types::{Action, PendingConfirm, ViewState};
 
-use super::{ACCENT, FG, FG_FAINT, RED};
+use super::{FG, FG_FAINT, RED, accent};
 
 fn capped<'a>(lines: impl ExactSizeIterator<Item = Line<'a>>, max: usize) -> Vec<Line<'a>> {
     let total = lines.len();
@@ -84,7 +84,7 @@ fn preview_lines(
     let header = (!extras.is_empty()).then(|| {
         Line::styled(
             t!("tui.confirm.also-removed").to_string(),
-            Style::default().fg(ACCENT),
+            Style::default().fg(accent()),
         )
     });
     let extras = extras
@@ -153,7 +153,7 @@ pub(super) fn render_confirm(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(ACCENT))
+        .border_style(Style::default().fg(accent()))
         .padding(Padding::horizontal(1))
         .title(Span::styled(
             format!(" {} ", pending.title),

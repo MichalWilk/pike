@@ -186,12 +186,14 @@ Launch with `pike tui` (or `pike ui`). Seven tabs:
 | Updates | `3` | `/` to filter, `u` update selected, `U` update all, `s` cycle source, `r` refresh |
 | Repos | `4` | `/` to filter, `e` toggle enable/disable, `a` add (wizard), `d` delete, `s` cycle source, `r` refresh |
 | Cleanup | `5` | `e`/`space` select, `a` all, `c` clean, `/` filter, `s` cycle source, `r` refresh |
-| Settings | `9` | `e` toggle option (auto-saves) |
-| About | `0` | Project info, `Enter` to open repo URL |
+| Settings | `9` | `e` toggle option (auto-saves); custom accent: `e` opens hex input, `Enter` saves, `Esc` cancels |
+| About | `0` | Project info, `Enter` or click to open repo and Ko-fi links |
 
 Navigation: `j`/`k` or arrows, `Tab`/`Shift+Tab` cycle tabs, mouse scroll/click, `q` quit.
 
 Install, remove, clean and repo changes (add, delete, enable/disable) open a confirmation dialog: `Enter` or `y` confirms, `q`, `Esc` or `n` cancel the confirmation window; `q` quits only when no window or input field is active. While it is open, the footer shows only the confirm and cancel buttons, which also work with the mouse. For clean, the dialog also lists packages that would be removed as dependencies. Updates are not confirmed. Turn the dialog off with "Confirm actions" in Settings or `confirm_actions = false` under `[display]`.
+
+The TUI accent color (highlights, selection background, active tab, spinners, dialog border) comes from `accent_color` under `[display]` (hex `#rrggbb`, default `#fe8019`). The "Accent color" row in Settings cycles presets (orange, blue, green, purple, red) and then "custom". With "custom" selected a "Custom hex" row appears below: `e` opens an input for six hex digits, `Enter` saves, `Esc` cancels. Any `#rrggbb` set in the file shows as "custom" with its hex. An invalid value in the file falls back to the default.
 
 The repo add wizard (`a` on Repos tab) guides through source selection, then method selection (for dnf: .repo file, COPR, base URL, RPM package), then shows method-specific input fields.
 
@@ -211,6 +213,7 @@ The repo add wizard (`a` on Repos tab) guides through source selection, then met
 [display]
 # language = "auto"  # "auto", "en", or "pl"
 # confirm_actions = true  # confirmation dialog in the TUI before install, remove, clean and repo changes
+# accent_color = "#fe8019"  # TUI accent (highlights, selection, active tab), hex "#rrggbb"
 
 [display.architectures]
 # dnf = ["x86_64", "noarch"]

@@ -52,6 +52,9 @@ impl App {
         if self.tab == Tab::Repos && self.repos.add_form.active {
             return self.handle_repos_add_key(key);
         }
+        if self.settings_input.is_some() {
+            return self.handle_settings_input_key(key);
+        }
 
         match key.code {
             KeyCode::Esc => {
@@ -497,6 +500,11 @@ impl App {
             };
         }
         match event.kind {
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+                if self.settings_input.is_some() =>
+            {
+                vec![]
+            }
             MouseEventKind::ScrollDown => {
                 self.move_selection(1, view);
                 vec![]
@@ -508,6 +516,15 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 let actions = self.handle_click(hit, event.column, event.row, view);
                 self.intercept_all(actions)
+            }
+            MouseEventKind::Moved if self.settings_input.is_some() => {
+                view.hover_row = None;
+                let on_button = matches!(
+                    self.hit_test(view, hit, event.column, event.row),
+                    HitResult::Target(ClickAction::Key(_))
+                );
+                set_cursor_pointer(view, on_button);
+                vec![]
             }
             MouseEventKind::Moved => {
                 self.update_hover(view, hit, event.column, event.row);
@@ -533,6 +550,16 @@ impl App {
             HitResult::Target(ClickAction::Key(code)) => {
                 self.dispatch_key(KeyEvent::from(code), view)
             }
+            HitResult::Target(ClickAction::AboutLink(i)) => {
+                match crate::tui::ui::about::ABOUT_URLS.get(i) {
+                    Some(url) => {
+                        view.about_table.select(Some(i));
+                        vec![Action::OpenUrl((*url).into())]
+                    }
+                    None => vec![],
+                }
+            }
+            HitResult::TableRow(_) if self.settings_input.is_some() => vec![],
             HitResult::TableRow(idx) => {
                 view.table_for(self.tab).select(Some(idx));
                 if self.tab == Tab::Cleanup
@@ -728,5 +755,92 @@ mod tests {
         assert!(app.cleanup_selected.is_empty());
         assert_eq!(app.cleanup.filter, "org");
         assert_eq!(app.last_clean_ok, None);
+    }
+
+    #[test]
+    fn test_settings_input_ignores_scroll_and_row_clicks() {
+        let mut app = App::new(Config::default(), Vec::new(), vec![SourceType::Dnf]);
+        app.tab = Tab::Settings;
+        app.ensure_settings_cache();
+        let mut view = ViewState::new(false);
+        view.settings_table.select(Some(2));
+        app.settings_input = Some("#".into());
+        app.input_mode = InputMode::Editing;
+        let target = |y, action| crate::tui::types::ClickTarget {
+            rect: ratatui::layout::Rect::new(0, y, 10, 1),
+            action,
+        };
+        let hit = HitState {
+            click_targets: vec![
+                target(0, ClickAction::SwitchTab(Tab::Search)),
+                target(20, ClickAction::Key(KeyCode::Esc)),
+            ],
+            table_zone: Some(TableClickZone {
+                y_start: 5,
+                x_start: 2,
+                width: 80,
+                visible_rows: 10,
+                item_count: app.settings_count(),
+            }),
+        };
+        let event_at = |kind, row| MouseEvent {
+            kind,
+            column: 5,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        let event = |kind| event_at(kind, 8);
+        for kind in [
+            MouseEventKind::ScrollDown,
+            MouseEventKind::ScrollUp,
+            MouseEventKind::Down(MouseButton::Left),
+        ] {
+            assert!(app.handle_mouse(event(kind), &hit, &mut view).is_empty());
+            assert_eq!(view.settings_table.selected(), Some(2));
+        }
+        view.hover_row = Some(3);
+        app.handle_mouse(event(MouseEventKind::Moved), &hit, &mut view);
+        assert_eq!(view.hover_row, None);
+        assert!(!view.cursor_pointer);
+        app.handle_mouse(event_at(MouseEventKind::Moved, 20), &hit, &mut view);
+        assert!(view.cursor_pointer);
+        app.handle_mouse(event_at(MouseEventKind::Moved, 0), &hit, &mut view);
+        assert!(!view.cursor_pointer);
+        assert_eq!(app.settings_input.as_deref(), Some("#"));
+        assert_eq!(app.input_mode, InputMode::Editing);
+    }
+
+    #[test]
+    fn test_about_link_click_opens_url_and_selects() {
+        let mut app = App::new(Config::default(), Vec::new(), vec![SourceType::Dnf]);
+        app.tab = Tab::About;
+        let mut view = ViewState::new(false);
+        let hit = HitState {
+            click_targets: vec![
+                crate::tui::types::ClickTarget {
+                    rect: ratatui::layout::Rect::new(10, 6, 20, 1),
+                    action: ClickAction::AboutLink(1),
+                },
+                crate::tui::types::ClickTarget {
+                    rect: ratatui::layout::Rect::new(10, 7, 20, 1),
+                    action: ClickAction::AboutLink(9),
+                },
+            ],
+            table_zone: None,
+        };
+        let click_at = |row| MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 15,
+            row,
+            modifiers: KeyModifiers::NONE,
+        };
+        let actions = app.handle_mouse(click_at(6), &hit, &mut view);
+        assert!(matches!(
+            actions.as_slice(),
+            [Action::OpenUrl(url)] if url == crate::tui::ui::about::ABOUT_URLS[1]
+        ));
+        assert_eq!(view.about_table.selected(), Some(1));
+        assert!(app.handle_mouse(click_at(7), &hit, &mut view).is_empty());
+        assert_eq!(view.about_table.selected(), Some(1));
     }
 }

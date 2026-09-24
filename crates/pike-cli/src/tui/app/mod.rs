@@ -202,6 +202,9 @@ pub(crate) struct App {
     installed_set: HashMap<SourceType, HashSet<String>>,
     pub(super) cached_settings_layout: Option<Vec<SettingsRow>>,
     pub(crate) daemon_running: bool,
+    pub(crate) settings_input: Option<String>,
+    pub(crate) accent_custom: bool,
+    pub(crate) accent_reset: bool,
 }
 
 fn pkg_source(pkg: &Package) -> SourceType {
@@ -276,6 +279,9 @@ impl App {
             installed_set: HashMap::new(),
             cached_settings_layout: None,
             daemon_running: false,
+            settings_input: None,
+            accent_custom: false,
+            accent_reset: false,
         }
     }
 
@@ -384,6 +390,9 @@ impl App {
     fn switch_tab(&mut self, tab: Tab) {
         if self.tab == Tab::Cleanup && tab != Tab::Cleanup {
             self.last_clean_ok = None;
+        }
+        if self.settings_input.take().is_some() {
+            self.input_mode = InputMode::Normal;
         }
         self.tab = tab;
         self.status_message.clear();

@@ -96,6 +96,7 @@ pub(super) async fn handle_action(
         }
         Action::SaveSettings => {
             std::fs::write(config_path, app.config.to_toml_commented())?;
+            app.settings_saved();
             crate::ipc::try_daemon_request(&crate::ipc::DaemonRequest::ReloadConfig);
             app.set_status(t!("tui.status.settings-saved"));
         }
