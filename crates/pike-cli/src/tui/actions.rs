@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -9,6 +10,7 @@ use unicode_width::UnicodeWidthStr;
 
 use pike_core::manager::PackageManager;
 use pike_core::package::{CleanupItem, SourceType};
+use pike_core::util::truncate_str;
 
 use crate::ipc::notify_daemon_recheck;
 
@@ -373,6 +375,7 @@ fn suspend_terminal(
 
     eprint!("\x1b[2J\x1b[H");
 
+    let action_label = truncate_str(action_label, width.saturating_sub(4));
     let pike_pad = width.saturating_sub(4) / 2;
     let label_pad = width.saturating_sub(action_label.width()) / 2;
     let sep = "─".repeat(width.saturating_sub(4));
@@ -381,20 +384,47 @@ fn suspend_terminal(
     eprintln!("{:\u{0020}>pike_pad$}\x1b[1mpike\x1b[0m", "");
     eprintln!("{:\u{0020}>label_pad$}\x1b[2m{action_label}\x1b[0m", "");
 
-    if !items.is_empty() {
-        let list = items.join(", ");
-        let list_pad = width.saturating_sub(list.width()) / 2;
-        eprintln!("{:\u{0020}>list_pad$}{list}", "");
+    let max_lines = (height as usize / 4).min(4);
+    let lines = header_lines(items, width.saturating_sub(4), max_lines);
+    for line in &lines {
+        let line_pad = width.saturating_sub(line.width()) / 2;
+        eprintln!("{:\u{0020}>line_pad$}{line}", "");
     }
 
     eprintln!("{:\u{0020}>sep_pad$}\x1b[2m{sep}\x1b[0m", "");
     eprintln!();
 
-    let scroll_start = if items.is_empty() { 6 } else { 7 };
+    let scroll_start = 6 + lines.len();
     eprint!("\x1b[{scroll_start};{height}r\x1b[{scroll_start};1H");
     let _ = io::stderr().flush();
 
     Ok(width)
+}
+
+fn header_lines(items: &[String], width: usize, max_lines: usize) -> Vec<String> {
+    let max_lines = max_lines.max(1);
+    let mut groups: Vec<Vec<Cow<'_, str>>> = Vec::new();
+    let mut used = 0;
+    for item in items.iter().map(|item| truncate_str(item, width)) {
+        let item_width = item.width();
+        if let Some(last) = groups.last_mut()
+            && used + 2 + item_width <= width
+        {
+            last.push(item);
+            used += 2 + item_width;
+        } else {
+            groups.push(vec![item]);
+            used = item_width;
+        }
+    }
+    if groups.len() <= max_lines {
+        return groups.iter().map(|g| g.join(", ")).collect();
+    }
+    let kept = &groups[..max_lines - 1];
+    let shown: usize = kept.iter().map(Vec::len).sum();
+    let mut lines: Vec<String> = kept.iter().map(|g| g.join(", ")).collect();
+    lines.push(t!("tui.confirm.more", count = items.len() - shown).to_string());
+    lines
 }
 
 fn resume_terminal(
@@ -444,4 +474,48 @@ where
     resume_terminal(terminal, width)?;
 
     Ok(success)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::header_lines;
+
+    fn items(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("pkg{i:02}")).collect()
+    }
+
+    #[test]
+    fn test_header_lines_wraps_on_item_boundaries() {
+        let lines = header_lines(&items(5), 20, 4);
+        assert_eq!(lines, vec!["pkg00, pkg01, pkg02", "pkg03, pkg04"]);
+    }
+
+    #[test]
+    fn test_header_lines_empty() {
+        assert!(header_lines(&[], 20, 4).is_empty());
+    }
+
+    #[test]
+    fn test_header_lines_caps_with_more() {
+        let lines = header_lines(&items(20), 20, 3);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "pkg00, pkg01, pkg02");
+        assert_eq!(lines[1], "pkg03, pkg04, pkg05");
+        assert!(lines[2].ends_with("14 more"), "{}", lines[2]);
+    }
+
+    #[test]
+    fn test_header_lines_single_line_budget() {
+        assert_eq!(header_lines(&items(3), 20, 1), vec!["pkg00, pkg01, pkg02"]);
+        let lines = header_lines(&items(4), 20, 1);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].ends_with("4 more"), "{}", lines[0]);
+        assert_eq!(header_lines(&items(4), 20, 0), lines);
+    }
+
+    #[test]
+    fn test_header_lines_item_wider_than_width() {
+        let long = vec!["a-very-long-package-name".to_string(), "b".to_string()];
+        assert_eq!(header_lines(&long, 10, 4), vec!["a-very-lo…", "b"]);
+    }
 }
