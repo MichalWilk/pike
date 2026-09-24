@@ -18,6 +18,8 @@
 # language = "auto"
 # Ask for confirmation in the TUI before install, remove, clean and repo changes
 # confirm_actions = true
+# TUI accent color as hex, e.g. "#e5c76b"
+# accent_color = "#fe8019"
 
 # Architecture filters per source.
 # Only packages matching these architectures are shown in search results.

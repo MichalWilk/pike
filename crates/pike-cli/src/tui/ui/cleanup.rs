@@ -11,7 +11,7 @@ use crate::tui::app::App;
 use crate::tui::types::{CHECKBOX_WIDTH, HitState, Tab, ViewState};
 
 use super::{
-    ACCENT, FG_DIM, FG_FAINT, GREEN, HOVER_FG, render_centered_empty, render_table_widget,
+    FG_DIM, FG_FAINT, GREEN, HOVER_FG, accent, render_centered_empty, render_table_widget,
     row_styles, split_filter_area,
 };
 
@@ -70,7 +70,13 @@ pub(super) fn render_cleanup(
 ) {
     if app.cleanup.loading {
         let msg = t!("tui.cleanup.scanning");
-        render_centered_empty(frame, area, &view.spinner_char().to_string(), &msg, ACCENT);
+        render_centered_empty(
+            frame,
+            area,
+            &view.spinner_char().to_string(),
+            &msg,
+            accent(),
+        );
         return;
     }
 
@@ -121,7 +127,7 @@ pub(super) fn render_cleanup(
         .map(|(vi, &real_i)| {
             let item = &app.cleanup.items[real_i];
             let hov = hover == Some(vi);
-            let (source_style, name_style, ver_style, size_style) = row_styles(hov, ACCENT);
+            let (source_style, name_style, ver_style, size_style) = row_styles(hov, accent());
             let reason_style = if hov {
                 Style::default().fg(HOVER_FG)
             } else {

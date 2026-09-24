@@ -8,6 +8,8 @@ mod search;
 mod settings;
 mod updates;
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Style};
@@ -21,16 +23,31 @@ use rust_i18n::t;
 use super::app::App;
 use super::types::{HitState, Tab, TableClickZone, ViewState};
 
-pub(super) const ACCENT: Color = Color::Rgb(254, 128, 25);
 pub(super) const FG: Color = Color::White;
 pub(super) const FG_DIM: Color = Color::Rgb(180, 180, 184);
 pub(super) const FG_FAINT: Color = Color::Rgb(120, 120, 128);
 pub(super) const FG_SUBTLE: Color = Color::Rgb(68, 68, 72);
-pub(super) const SELECTED_BG: Color = Color::Rgb(254, 128, 25);
 pub(super) const SELECTED_FG: Color = Color::Rgb(0, 0, 0);
 pub(super) const GREEN: Color = Color::Rgb(50, 215, 75);
 pub(super) const RED: Color = Color::Rgb(255, 69, 58);
 pub(super) const HOVER_FG: Color = Color::Rgb(210, 210, 214);
+
+pub(crate) const DEFAULT_ACCENT_RGB: (u8, u8, u8) = (0xfe, 0x80, 0x19);
+
+static ACCENT_RGB: AtomicU32 = AtomicU32::new(pack_rgb(DEFAULT_ACCENT_RGB));
+
+const fn pack_rgb((r, g, b): (u8, u8, u8)) -> u32 {
+    ((r as u32) << 16) | ((g as u32) << 8) | b as u32
+}
+
+pub(crate) fn set_accent(rgb: (u8, u8, u8)) {
+    ACCENT_RGB.store(pack_rgb(rgb), Ordering::Relaxed);
+}
+
+pub(super) fn accent() -> Color {
+    let [_, r, g, b] = ACCENT_RGB.load(Ordering::Relaxed).to_be_bytes();
+    Color::Rgb(r, g, b)
+}
 
 pub(super) const TABLE_WIDTHS: [Constraint; 5] = [
     Constraint::Length(10),
@@ -83,7 +100,7 @@ pub(crate) fn render(frame: &mut Frame, app: &App, view: &mut ViewState, hit: &m
         Tab::Settings => settings::render_settings(frame, app, view, hit, content_area),
         Tab::About => {
             let selected = view.about_table.selected().unwrap_or(0);
-            about::render_about(frame, content_area, selected);
+            about::render_about(frame, hit, content_area, selected);
         }
     }
 
@@ -206,7 +223,7 @@ pub(super) fn package_header() -> Row<'static> {
 
 pub(super) fn render_filter_input(frame: &mut Frame, filter_text: &str, editing: bool, area: Rect) {
     let prompt_style = if editing {
-        Style::default().fg(ACCENT)
+        Style::default().fg(accent())
     } else {
         Style::default().fg(FG_FAINT)
     };
@@ -306,7 +323,7 @@ pub(super) fn render_table_widget(
     });
     let table = Table::new(rows, widths)
         .header(header)
-        .row_highlight_style(Style::default().bg(SELECTED_BG).fg(SELECTED_FG))
+        .row_highlight_style(Style::default().bg(accent()).fg(SELECTED_FG))
         .block(borderless_block());
     frame.render_stateful_widget(table, area, state);
 }
@@ -339,7 +356,7 @@ mod tests {
             .iter()
             .filter_map(|t| match t.action {
                 ClickAction::Key(code) => Some(code),
-                ClickAction::SwitchTab(_) => None,
+                _ => None,
             })
             .collect()
     }
@@ -348,5 +365,13 @@ mod tests {
     fn test_modal_footer_buttons_clickable_only_when_visible() {
         assert_eq!(footer_keys(80, 24), [KeyCode::Enter, KeyCode::Esc]);
         assert!(footer_keys(40, 6).is_empty());
+    }
+
+    #[test]
+    fn test_default_accent_rgb_matches_config_default() {
+        assert_eq!(
+            pike_core::config::parse_hex_color(pike_core::config::DEFAULT_ACCENT_COLOR),
+            Some(DEFAULT_ACCENT_RGB)
+        );
     }
 }

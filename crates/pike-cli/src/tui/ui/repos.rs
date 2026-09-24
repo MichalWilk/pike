@@ -13,7 +13,7 @@ use crate::tui::app::App;
 use crate::tui::types::{HitState, Tab, ViewState};
 
 use super::{
-    ACCENT, FG, FG_DIM, FG_FAINT, GREEN, RED, render_centered_empty, render_table_widget,
+    FG, FG_DIM, FG_FAINT, GREEN, RED, accent, render_centered_empty, render_table_widget,
     row_styles, split_filter_area,
 };
 
@@ -31,7 +31,13 @@ pub(super) fn render_repos(
 
     if app.repos.list.loading {
         let msg = t!("tui.repos.loading");
-        render_centered_empty(frame, area, &view.spinner_char().to_string(), &msg, ACCENT);
+        render_centered_empty(
+            frame,
+            area,
+            &view.spinner_char().to_string(),
+            &msg,
+            accent(),
+        );
         return;
     }
 
@@ -122,7 +128,7 @@ fn render_form_header(frame: &mut Frame, app: &App, area: Rect) {
     let sep = Span::styled(" ‹ ", Style::default().fg(FG_FAINT));
     let title = t!("tui.repos.form-title");
     let mut spans = vec![
-        Span::styled("esc", Style::default().fg(ACCENT)),
+        Span::styled("esc", Style::default().fg(accent())),
         sep.clone(),
         Span::styled(title.to_string(), Style::default().fg(FG_FAINT)),
     ];
@@ -173,9 +179,7 @@ fn render_repos_picker(frame: &mut Frame, app: &App, area: Rect) {
         let row_area = Rect::new(area.x, y, area.width, 1);
         let is_selected = i == selected_idx;
         let style = if is_selected {
-            Style::default()
-                .bg(super::SELECTED_BG)
-                .fg(super::SELECTED_FG)
+            Style::default().bg(accent()).fg(super::SELECTED_FG)
         } else {
             Style::default().fg(FG_DIM)
         };
@@ -198,7 +202,7 @@ fn render_form_field(
 ) {
     let field_area = Rect::new(area.x, y, area.width, 1);
     let style = if active {
-        Style::default().fg(ACCENT)
+        Style::default().fg(accent())
     } else {
         Style::default().fg(FG_FAINT)
     };
@@ -219,7 +223,7 @@ fn render_form_field(
 fn render_gpgcheck_toggle(frame: &mut Frame, area: Rect, y: u16, active: bool, checked: bool) {
     let field_area = Rect::new(area.x, y, area.width, 1);
     let label_style = if active {
-        Style::default().fg(ACCENT)
+        Style::default().fg(accent())
     } else {
         Style::default().fg(FG_FAINT)
     };

@@ -20,12 +20,15 @@ pub(crate) enum SettingsRow {
     NotifyToggle,
     KeepKernels,
     ConfirmToggle,
+    AccentCycle,
+    AccentHex,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) enum ClickAction {
     SwitchTab(Tab),
     Key(KeyCode),
+    AboutLink(usize),
 }
 
 pub(crate) struct ClickTarget {

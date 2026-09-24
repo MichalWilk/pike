@@ -8,7 +8,7 @@ use rust_i18n::t;
 use crate::tui::app::App;
 use crate::tui::types::{HitState, SettingsRow, ViewState};
 
-use super::{FG, FG_FAINT, GREEN, HOVER_FG, RED, render_table_widget};
+use super::{FG, FG_FAINT, GREEN, HOVER_FG, RED, accent, render_table_widget};
 
 pub(super) fn render_settings(
     frame: &mut Frame,
@@ -33,7 +33,7 @@ pub(super) fn render_settings(
                     "pl" => "Polski",
                     _ => "auto",
                 };
-                value_row(&label, display.to_string(), hover == Some(idx))
+                value_row(&label, display, hover == Some(idx))
             }
             SettingsRow::SourceToggle(st) => toggle_row(
                 st.display_name(),
@@ -73,6 +73,8 @@ pub(super) fn render_settings(
                     hover == Some(idx),
                 )
             }
+            SettingsRow::AccentCycle => accent_row(app, hover == Some(idx)),
+            SettingsRow::AccentHex => accent_hex_row(app, hover == Some(idx)),
             SettingsRow::KeepKernels => {
                 let label = t!("tui.settings.keep-kernels");
                 value_row(
@@ -125,7 +127,7 @@ fn format_interval(secs: u64) -> String {
     }
 }
 
-fn value_row(key: &str, value: String, hovered: bool) -> Row<'static> {
+fn value_row(key: &str, value: impl Into<Line<'static>>, hovered: bool) -> Row<'static> {
     let name_style = if hovered {
         Style::default().fg(HOVER_FG)
     } else {
@@ -138,8 +140,43 @@ fn value_row(key: &str, value: String, hovered: bool) -> Row<'static> {
     };
     Row::new(vec![
         Cell::from(format!("  {key}")).style(name_style),
-        Cell::from(value).style(val_style),
+        Cell::from(value.into()).style(val_style),
     ])
+}
+
+fn accent_row(app: &App, hovered: bool) -> Row<'static> {
+    let label = t!("tui.settings.accent-color");
+    let name = match app.accent_preset_key() {
+        Some(key) => t!(key).to_string(),
+        None => t!("tui.settings.accent-custom").to_string(),
+    };
+    let mut spans = vec![
+        Span::styled("██ ", Style::default().fg(accent())),
+        Span::raw(name),
+    ];
+    if app.accent_reset {
+        spans.push(Span::styled(
+            format!("  ({})", t!("tui.settings.accent-invalid")),
+            Style::default().fg(FG_FAINT),
+        ));
+    }
+    value_row(&label, Line::from(spans), hovered)
+}
+
+fn accent_hex_row(app: &App, hovered: bool) -> Row<'static> {
+    let label = format!("  {}", t!("tui.settings.accent-custom-hex"));
+    let value = match &app.settings_input {
+        Some(input) => Line::from(vec![
+            Span::styled(input.clone(), Style::default().fg(FG)),
+            Span::styled("▏", Style::default().fg(accent())),
+            Span::styled(
+                format!("  {}", t!("tui.settings.accent-hint")),
+                Style::default().fg(FG_FAINT),
+            ),
+        ]),
+        None => Line::from(app.config.display.accent_color.clone()),
+    };
+    value_row(&label, value, hovered)
 }
 
 fn status_row(key: &str, running: bool) -> Row<'static> {

@@ -10,7 +10,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::tui::app::App;
 use crate::tui::types::{ClickAction, ClickTarget, HitState, InputMode, Tab, ViewState};
 
-use super::{ACCENT, FG, FG_DIM, FG_FAINT, FG_SUBTLE, GREEN, RED, format_count_line};
+use super::{FG, FG_DIM, FG_FAINT, FG_SUBTLE, GREEN, RED, accent, format_count_line};
 
 struct ButtonDef {
     key: &'static str,
@@ -83,7 +83,7 @@ fn render_tab_group(
         let (num, name) = tab_label(tab, app);
         let is_active = tab == app.tab;
 
-        spans.push(Span::styled(num, Style::default().fg(ACCENT)));
+        spans.push(Span::styled(num, Style::default().fg(accent())));
         *x += tab.key().width() as u16;
 
         let name_style = if is_active {
@@ -205,7 +205,7 @@ pub(super) fn render_footer(
 
         let start_x = x;
         let key_len = btn.key.width() as u16;
-        left_spans.push(Span::styled(btn.key, Style::default().fg(ACCENT)));
+        left_spans.push(Span::styled(btn.key, Style::default().fg(accent())));
         x += key_len;
 
         let label = format!(" {}", btn.label);
@@ -237,7 +237,7 @@ pub(super) fn render_footer(
     let quit_x = area.x + area.width.saturating_sub(quit_width);
 
     let right_line = Line::from(vec![
-        Span::styled(quit_btn.key, Style::default().fg(ACCENT)),
+        Span::styled(quit_btn.key, Style::default().fg(accent())),
         Span::styled(format!(" {}", quit_btn.label), Style::default().fg(FG_DIM)),
     ]);
 
@@ -339,7 +339,7 @@ fn repos_context_line(app: &App) -> Option<Line<'static>> {
 }
 
 fn footer_buttons(app: &App, view: &ViewState) -> (Vec<ButtonDef>, Option<ButtonDef>) {
-    if app.pending_confirm.is_some() {
+    if app.pending_confirm.is_some() || app.settings_input.is_some() {
         return (confirm_buttons(), None);
     }
     let quit = ButtonDef::new("q", "tui.button.quit", KeyCode::Char('q'));

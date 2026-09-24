@@ -7,7 +7,7 @@ use crate::tui::app::App;
 use crate::tui::types::{HitState, Tab, ViewState};
 
 use super::{
-    ACCENT, FG_FAINT, PackageRowData, TABLE_WIDTHS, make_package_row, package_header,
+    FG_FAINT, PackageRowData, TABLE_WIDTHS, accent, make_package_row, package_header,
     render_centered_empty, render_table_widget, split_filter_area,
 };
 
@@ -20,7 +20,13 @@ pub(super) fn render_installed(
 ) {
     if app.installed.loading {
         let msg = t!("tui.installed.loading");
-        render_centered_empty(frame, area, &view.spinner_char().to_string(), &msg, ACCENT);
+        render_centered_empty(
+            frame,
+            area,
+            &view.spinner_char().to_string(),
+            &msg,
+            accent(),
+        );
         return;
     }
 

@@ -125,6 +125,24 @@ fn default_language() -> String {
     "auto".into()
 }
 
+/// Default TUI accent color as `#rrggbb`.
+pub const DEFAULT_ACCENT_COLOR: &str = "#fe8019";
+
+fn default_accent_color() -> String {
+    DEFAULT_ACCENT_COLOR.into()
+}
+
+pub fn parse_hex_color(s: &str) -> Option<(u8, u8, u8)> {
+    let hex = s.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+    Some((r, g, b))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DisplayConfig {
     #[serde(default = "default_language")]
@@ -133,6 +151,8 @@ pub struct DisplayConfig {
     pub architectures: ArchConfig,
     #[serde(default = "default_true")]
     pub confirm_actions: bool,
+    #[serde(default = "default_accent_color")]
+    pub accent_color: String,
 }
 
 impl Default for DisplayConfig {
@@ -141,6 +161,7 @@ impl Default for DisplayConfig {
             language: default_language(),
             architectures: ArchConfig::default(),
             confirm_actions: true,
+            accent_color: default_accent_color(),
         }
     }
 }
@@ -329,8 +350,10 @@ impl Config {
              # Language: \"auto\" (detect from system), \"en\", or \"pl\"\n\
              language = \"{}\"\n\
              # Ask for confirmation in the TUI before install, remove, clean and repo changes\n\
-             confirm_actions = {}\n",
-            self.display.language, self.display.confirm_actions
+             confirm_actions = {}\n\
+             # TUI accent color as hex, e.g. \"#e5c76b\"\n\
+             accent_color = \"{}\"\n",
+            self.display.language, self.display.confirm_actions, self.display.accent_color
         ));
 
         out.push_str(
@@ -425,6 +448,32 @@ mod tests {
         config.display.confirm_actions = false;
         let parsed: Config = toml::from_str(&config.to_toml_commented()).unwrap();
         assert!(!parsed.display.confirm_actions);
+    }
+
+    #[test]
+    fn test_accent_color_default_roundtrip_and_missing() {
+        assert_eq!(Config::default().display.accent_color, "#fe8019");
+        let parsed: Config = toml::from_str("[sources]\ndnf = true\n[display]\n").unwrap();
+        assert_eq!(parsed.display.accent_color, "#fe8019");
+
+        let mut config = Config::default();
+        config.display.accent_color = "#3b8eea".into();
+        let parsed: Config = toml::from_str(&config.to_toml_commented()).unwrap();
+        assert_eq!(parsed.display.accent_color, "#3b8eea");
+    }
+
+    #[test]
+    fn test_parse_hex_color() {
+        assert_eq!(parse_hex_color("#fe8019"), Some((254, 128, 25)));
+        assert_eq!(parse_hex_color("#FE8019"), Some((254, 128, 25)));
+        assert_eq!(parse_hex_color("#000000"), Some((0, 0, 0)));
+        assert_eq!(parse_hex_color("fe8019"), None);
+        assert_eq!(parse_hex_color("#f81"), None);
+        assert_eq!(parse_hex_color("#fe801g"), None);
+        assert_eq!(parse_hex_color("#+e8019"), None);
+        assert_eq!(parse_hex_color("#fe80199"), None);
+        assert_eq!(parse_hex_color(""), None);
+        assert_eq!(parse_hex_color("#"), None);
     }
 
     #[test]
