@@ -249,6 +249,7 @@ pub(crate) fn parse_search_output(output: &str) -> Vec<Package> {
             let (name, description) = line.split_once(" - ")?;
             Some(Package {
                 name: name.trim().to_string(),
+                display_name: None,
                 version: String::new(),
                 source: SourceType::Apt,
                 arch: None,
@@ -321,6 +322,7 @@ pub(crate) fn parse_list_installed_output(output: &str) -> Vec<Package> {
             }
             Some(Package {
                 name: fields[0].to_string(),
+                display_name: None,
                 version: fields[1].to_string(),
                 source: SourceType::Apt,
                 arch: Some(fields[2].to_string()),

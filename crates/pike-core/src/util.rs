@@ -47,15 +47,55 @@ pub fn sort_by_source<T>(
     });
 }
 
+/// Search results: architecture filter, then relevance to `query`, source and name.
+/// Relevance: exact name, name prefix, name contains, description contains. For flatpak
+/// the display name counts as a name and the last app ID segment as a prefix match.
 pub fn filter_and_sort_packages(
     packages: &mut Vec<crate::package::Package>,
     config: &crate::config::Config,
+    query: &str,
 ) {
     packages.retain(|p| match &p.arch {
         Some(arch) => config.display.architectures.arch_allowed(arch, p.source),
         None => true,
     });
+    let query = query.trim().to_lowercase();
     sort_by_source(packages, |p| &p.source, |p| &p.name);
+    packages.sort_by_cached_key(|p| search_rank(p, &query));
+}
+
+fn search_rank(package: &crate::package::Package, query: &str) -> u8 {
+    let name = package.name.to_lowercase();
+    let mut rank = text_rank(&name, query);
+    if package.source == crate::package::SourceType::Flatpak
+        && let Some(short) = name.rsplit('.').next()
+    {
+        rank = rank.min(text_rank(short, query).max(1));
+    }
+    if let Some(display) = &package.display_name {
+        rank = rank.min(text_rank(&display.to_lowercase(), query));
+    }
+    if rank > 3
+        && package
+            .description
+            .as_deref()
+            .is_some_and(|d| d.to_lowercase().contains(query))
+    {
+        rank = 3;
+    }
+    rank
+}
+
+fn text_rank(text: &str, query: &str) -> u8 {
+    if text == query {
+        0
+    } else if text.starts_with(query) {
+        1
+    } else if text.contains(query) {
+        2
+    } else {
+        4
+    }
 }
 
 /// rpmvercmp semantics: `~` sorts before the end of string, `^` after it.
@@ -170,6 +210,140 @@ mod tests {
         assert_eq!(
             compare_versions("6.1.0-25-amd64", "6.1.0-3-amd64"),
             Ordering::Greater
+        );
+    }
+
+    fn pkg(name: &str, source: crate::package::SourceType, desc: &str) -> crate::package::Package {
+        crate::package::Package {
+            name: name.into(),
+            display_name: None,
+            version: String::new(),
+            source,
+            arch: None,
+            description: Some(desc.into()),
+        }
+    }
+
+    #[test]
+    fn test_search_rank_orders_exact_prefix_contains_description() {
+        use crate::package::SourceType::{Dnf, Flatpak};
+        let mut firefox_flatpak = pkg("org.mozilla.firefox", Flatpak, "Web browser");
+        firefox_flatpak.display_name = Some("Firefox".into());
+        let mut packages = vec![
+            pkg("cargo-firefox-marionette", Dnf, "Marionette client"),
+            pkg("org.mozilla.firefox.BaseApp", Flatpak, "Base app"),
+            pkg("firefox-langpacks", Dnf, "Language packs"),
+            pkg("libgtk", Dnf, "Used by Firefox and others"),
+            firefox_flatpak,
+            pkg("firefox", Dnf, "Mozilla Firefox Web browser"),
+            pkg("zlib", Dnf, "Compression"),
+        ];
+        filter_and_sort_packages(
+            &mut packages,
+            &crate::config::Config::default(),
+            " FireFox ",
+        );
+        let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "firefox",
+                "org.mozilla.firefox",
+                "firefox-langpacks",
+                "cargo-firefox-marionette",
+                "org.mozilla.firefox.BaseApp",
+                "libgtk",
+                "zlib",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_search_rank_full_name_for_non_flatpak() {
+        use crate::package::SourceType::{Dnf, Flatpak};
+        let mut packages = vec![
+            pkg("python3.12", Dnf, "Python"),
+            pkg("org.example.12", Flatpak, "Example"),
+        ];
+        filter_and_sort_packages(&mut packages, &crate::config::Config::default(), "12");
+        let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["org.example.12", "python3.12"]);
+        assert_eq!(search_rank(&packages[1], "12"), 2);
+    }
+
+    #[test]
+    fn test_search_rank_display_name() {
+        use crate::package::SourceType::{Dnf, Flatpak};
+        let mut spotify = pkg(
+            "com.spotify.Client",
+            Flatpak,
+            "Online music streaming service",
+        );
+        spotify.display_name = Some("Spotify".into());
+        assert_eq!(search_rank(&spotify, "spotify"), 0);
+        let mut packages = vec![pkg("lpf-spotify-client", Dnf, "Spotify client"), spotify];
+        filter_and_sort_packages(&mut packages, &crate::config::Config::default(), "spotify");
+        let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["com.spotify.Client", "lpf-spotify-client"]);
+    }
+
+    #[test]
+    fn test_search_rank_last_segment_is_prefix_tier() {
+        use crate::package::SourceType::Flatpak;
+        let client = pkg("com.dropbox.Client", Flatpak, "Dropbox");
+        assert_eq!(search_rank(&client, "client"), 1);
+        assert_eq!(search_rank(&client, "dropbox"), 2);
+        let exact = pkg("com.dropbox.client", Flatpak, "Dropbox");
+        assert_eq!(search_rank(&exact, "com.dropbox.client"), 0);
+    }
+
+    #[test]
+    fn test_search_empty_query_keeps_source_name_order() {
+        use crate::package::SourceType::{Apt, Dnf, Flatpak};
+        let mut packages = vec![
+            pkg("zlib", Apt, "Compression"),
+            pkg("org.b.App", Flatpak, "B"),
+            pkg("vim", Dnf, "Editor"),
+            pkg("bash", Dnf, "Shell"),
+        ];
+        filter_and_sort_packages(&mut packages, &crate::config::Config::default(), "  ");
+        let names: Vec<&str> = packages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["bash", "vim", "org.b.App", "zlib"]);
+    }
+
+    #[test]
+    fn test_search_rank_without_description() {
+        use crate::package::SourceType::Dnf;
+        let mut package = pkg("libfoo", Dnf, "");
+        package.description = None;
+        assert_eq!(search_rank(&package, "foo"), 2);
+        assert_eq!(search_rank(&package, "bar"), 4);
+    }
+
+    #[test]
+    fn test_search_equal_rank_ties_by_source_then_name() {
+        use crate::package::SourceType::{Apt, Dnf, Flatpak};
+        let mut packages = vec![
+            pkg("vim-b", Apt, "Editor"),
+            pkg("org.vim.Vim-x", Flatpak, "Editor"),
+            pkg("vim-z", Dnf, "Editor"),
+            pkg("vim-a", Dnf, "Editor"),
+            pkg("vim-a", Apt, "Editor"),
+        ];
+        filter_and_sort_packages(&mut packages, &crate::config::Config::default(), "vim");
+        let names: Vec<(crate::package::SourceType, &str)> = packages
+            .iter()
+            .map(|p| (p.source, p.name.as_str()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                (Dnf, "vim-a"),
+                (Dnf, "vim-z"),
+                (Flatpak, "org.vim.Vim-x"),
+                (Apt, "vim-a"),
+                (Apt, "vim-b"),
+            ]
         );
     }
 }
