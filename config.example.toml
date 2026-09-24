@@ -16,6 +16,8 @@
 [display]
 # Language: "auto" (detect from system), "en", or "pl"
 # language = "auto"
+# Ask for confirmation in the TUI before install, remove, clean and repo changes
+# confirm_actions = true
 
 # Architecture filters per source.
 # Only packages matching these architectures are shown in search results.
@@ -33,3 +35,7 @@
 # interval = 600
 # Show desktop notifications when updates are found
 # notify = true
+
+[cleanup]
+# Number of newest kernels to keep (the running kernel is always kept)
+# keep_kernels = 2

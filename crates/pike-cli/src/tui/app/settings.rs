@@ -13,12 +13,17 @@ fn is_non_activatable(layout: &[SettingsRow], idx: usize) -> bool {
     )
 }
 
+fn next_keep_kernels(current: usize) -> usize {
+    if current >= 5 { 1 } else { current + 1 }
+}
+
 fn build_settings_layout(config: &Config) -> Vec<SettingsRow> {
     let mut rows = Vec::new();
     rows.push(SettingsRow::GroupHeader(
         t!("tui.settings.display").to_string(),
     ));
     rows.push(SettingsRow::LanguageCycle);
+    rows.push(SettingsRow::ConfirmToggle);
     rows.push(SettingsRow::Separator);
     rows.push(SettingsRow::GroupHeader(
         t!("tui.settings.sources").to_string(),
@@ -40,6 +45,11 @@ fn build_settings_layout(config: &Config) -> Vec<SettingsRow> {
         }
         rows.push(SettingsRow::ArchReset(st));
     }
+    rows.push(SettingsRow::Separator);
+    rows.push(SettingsRow::GroupHeader(
+        t!("tui.settings.cleanup").to_string(),
+    ));
+    rows.push(SettingsRow::KeepKernels);
     rows.push(SettingsRow::Separator);
     rows.push(SettingsRow::GroupHeader(
         t!("tui.settings.logging").to_string(),
@@ -209,6 +219,18 @@ impl App {
             }
             SettingsRow::NotifyToggle => {
                 self.config.daemon.notify = !self.config.daemon.notify;
+                self.invalidate_settings_cache();
+                true
+            }
+            SettingsRow::ConfirmToggle => {
+                self.config.display.confirm_actions = !self.config.display.confirm_actions;
+                self.invalidate_settings_cache();
+                true
+            }
+            SettingsRow::KeepKernels => {
+                self.config.cleanup.keep_kernels =
+                    next_keep_kernels(self.config.cleanup.keep_kernels());
+                self.cleanup.loaded = false;
                 self.invalidate_settings_cache();
                 true
             }

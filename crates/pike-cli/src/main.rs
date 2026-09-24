@@ -2,6 +2,7 @@ rust_i18n::i18n!("locales", fallback = "en");
 
 mod commands;
 mod daemon;
+mod format;
 mod i18n;
 mod ipc;
 mod tui;
@@ -76,11 +77,40 @@ enum Commands {
         source: Option<String>,
     },
     #[command(
-        about = "Remove orphaned dependencies and unused runtimes",
-        visible_alias = "ar",
-        alias = "clean"
+        about = "Show and remove orphaned packages, unused runtimes and caches (old kernels with --kernels or --all)"
     )]
-    Autoremove,
+    Clean {
+        #[arg(help = "Orphaned packages and unused runtimes", long)]
+        orphans: bool,
+        #[arg(help = "Old kernels (not included by default)", long)]
+        kernels: bool,
+        #[arg(help = "Package manager caches", long)]
+        cache: bool,
+        #[arg(
+            help = "Everything, including old kernels",
+            long,
+            conflicts_with_all = ["orphans", "kernels", "cache"]
+        )]
+        all: bool,
+        #[arg(help = "Filter by source: dnf, apt or flatpak", long, short = 'S')]
+        source: Option<String>,
+        #[arg(help = "Only list what would be removed", long)]
+        dry_run: bool,
+        #[arg(help = "Do not ask for confirmation", long, short = 'y')]
+        yes: bool,
+    },
+    #[command(
+        about = "Remove orphaned dependencies and unused runtimes (same as clean --orphans)",
+        visible_alias = "ar"
+    )]
+    Autoremove {
+        #[arg(help = "Filter by source: dnf, apt or flatpak", long, short = 'S')]
+        source: Option<String>,
+        #[arg(help = "Only list what would be removed", long)]
+        dry_run: bool,
+        #[arg(help = "Do not ask for confirmation", long, short = 'y')]
+        yes: bool,
+    },
     #[command(about = "Check for available updates", visible_alias = "ck")]
     Check {
         #[arg(help = "Send desktop notification when updates are available", long)]
@@ -122,7 +152,7 @@ enum Commands {
     #[command(about = "Launch interactive TUI", visible_alias = "ui")]
     Tui {
         #[arg(
-            help = "Start on a specific tab (search, installed, updates, repos, settings)",
+            help = "Start on a specific tab (search, installed, updates, repos, cleanup, settings)",
             long,
             short
         )]
@@ -215,8 +245,39 @@ async fn main() -> anyhow::Result<()> {
         Commands::Update { packages, source } => {
             commands::update(&manager, &packages, source.as_deref()).await?;
         }
-        Commands::Autoremove => {
-            commands::autoremove(&manager).await?;
+        Commands::Clean {
+            orphans,
+            kernels,
+            cache,
+            all,
+            source,
+            dry_run,
+            yes,
+        } => {
+            let opts = commands::CleanOptions {
+                orphans,
+                kernels,
+                cache,
+                all,
+                source,
+                dry_run,
+                yes,
+            };
+            commands::clean(&manager, opts, cli.json).await?;
+        }
+        Commands::Autoremove {
+            source,
+            dry_run,
+            yes,
+        } => {
+            let opts = commands::CleanOptions {
+                orphans: true,
+                source,
+                dry_run,
+                yes,
+                ..Default::default()
+            };
+            commands::clean(&manager, opts, cli.json).await?;
         }
         Commands::Check {
             notify,
@@ -322,10 +383,11 @@ fn parse_tab(s: &str) -> anyhow::Result<tui::app::Tab> {
         "installed" | "i" | "2" => Ok(tui::app::Tab::Installed),
         "updates" | "u" | "3" => Ok(tui::app::Tab::Updates),
         "repos" | "r" | "4" => Ok(tui::app::Tab::Repos),
+        "cleanup" | "c" | "5" => Ok(tui::app::Tab::Cleanup),
         "settings" | "9" => Ok(tui::app::Tab::Settings),
         "about" | "0" => Ok(tui::app::Tab::About),
         other => anyhow::bail!(
-            "unknown tab '{}', expected: search, installed, updates, repos, settings, about",
+            "unknown tab '{}', expected: search, installed, updates, repos, cleanup, settings, about",
             other
         ),
     }

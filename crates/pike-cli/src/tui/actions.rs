@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthStr;
 
 use pike_core::manager::PackageManager;
-use pike_core::package::SourceType;
+use pike_core::package::{CleanupItem, SourceType};
 
 use crate::ipc::notify_daemon_recheck;
 
@@ -59,9 +59,14 @@ pub(super) async fn handle_action(
             spawn_check_updates(app, tx, active_sources);
             spawn_daemon_recheck();
         }
-        Action::Autoremove => {
-            autoremove(terminal, app, manager).await?;
+        Action::RefreshCleanup => {
+            super::async_ops::spawn_list_cleanup(app, tx, active_sources);
+        }
+        Action::Clean(items) => {
+            clean(terminal, app, manager, &items).await?;
+            app.cleanup.loaded = false;
             app.installed.loaded = false;
+            spawn_check_updates(app, tx, active_sources);
             spawn_daemon_recheck();
         }
         Action::RefreshRepos => {
@@ -211,25 +216,34 @@ async fn update_all(
     Ok(())
 }
 
-async fn autoremove(
+async fn clean(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     manager: &PackageManager,
+    items: &[CleanupItem],
 ) -> anyhow::Result<()> {
-    let label = t!("tui.action.autoremove");
-    run_interactive(terminal, &label, &[], || async {
-        for st in &manager.active_source_types() {
-            if let Err(e) = manager.autoremove_source(*st).await {
+    let label = t!("tui.action.cleaning");
+    let summary = crate::format::items_summary(items);
+    let ok = run_interactive(terminal, &label, &[summary], || async {
+        let mut failed = false;
+        for (st, result) in manager.clean(items).await {
+            if let Err(e) = result {
                 let msg = t!("tui.action.error", err = e);
                 eprintln!("  [{st}] {msg}");
+                failed = true;
             }
         }
-        let msg = t!("tui.action.cleanup-complete");
+        if failed {
+            let msg = t!("tui.status.cleanup-error");
+            eprintln!("\n  {msg}");
+            anyhow::bail!("clean failed");
+        }
+        let msg = t!("tui.status.cleanup-complete");
         eprintln!("\n  {msg}");
         Ok(())
     })
     .await?;
-    app.set_status(t!("tui.status.autoremove-complete"));
+    app.last_clean_ok = Some(ok);
     Ok(())
 }
 

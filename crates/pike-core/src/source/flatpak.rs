@@ -1,9 +1,15 @@
 use async_trait::async_trait;
 
-use crate::package::{Package, PackageUpdate, RepoMethod, Repository, SourceType};
-use crate::source::{
-    PackageSource, Result, parse_installed_versions, run_captured, run_interactive, run_privileged,
+use crate::cleanup::{extra_removals, of_kind, with_stderr};
+use crate::error::PikeError;
+use crate::package::{
+    CleanupItem, CleanupKind, Package, PackageUpdate, RepoMethod, Repository, SourceType,
 };
+use crate::source::{
+    PackageSource, Result, parse_installed_versions, run_captured, run_captured_with_input,
+    run_interactive, run_privileged,
+};
+use crate::util::truncate_str;
 
 #[derive(Default)]
 pub struct FlatpakSource;
@@ -68,10 +74,6 @@ impl PackageSource for FlatpakSource {
         let refs: Vec<&str> = app_ids.iter().map(|s| s.as_str()).collect();
         args.extend_from_slice(&refs);
         run_interactive("flatpak", &args).await
-    }
-
-    async fn autoremove(&self) -> Result<()> {
-        run_interactive("flatpak", &["uninstall", "--unused", "-y"]).await
     }
 
     async fn check_updates(&self) -> Result<Vec<PackageUpdate>> {
@@ -182,6 +184,109 @@ impl PackageSource for FlatpakSource {
     async fn remove_repo(&self, id: &str) -> Result<()> {
         self.run_remote_op("remote-delete", id, &[id]).await
     }
+
+    async fn list_cleanup(
+        &self,
+        kinds: &[CleanupKind],
+        _keep_kernels: usize,
+    ) -> Result<Vec<CleanupItem>> {
+        if !kinds.contains(&CleanupKind::UnusedRuntime) {
+            return Ok(Vec::new());
+        }
+        let arch = default_arch().await;
+        let (mut items, user) =
+            tokio::try_join!(unused_in("--system", &arch), unused_in("--user", &arch))?;
+        items.extend(user);
+        Ok(dedupe_runtimes(items))
+    }
+
+    async fn clean(&self, items: &[CleanupItem]) -> Result<()> {
+        let (system_refs, user_refs, _) = installation_refs(items).await?;
+
+        if !user_refs.is_empty() {
+            let mut args = vec!["uninstall", "-y", "--user"];
+            args.extend(user_refs.iter().map(String::as_str));
+            run_interactive("flatpak", &args).await?;
+        }
+
+        if !system_refs.is_empty() {
+            let mut args = vec!["flatpak", "uninstall", "-y", "--system"];
+            args.extend(system_refs.iter().map(String::as_str));
+            run_privileged(&args).await?;
+        }
+        Ok(())
+    }
+
+    async fn preview_clean(&self, items: &[CleanupItem]) -> Result<Vec<String>> {
+        let (system_refs, user_refs, arch) = installation_refs(items).await?;
+        let (mut extras, user) = tokio::try_join!(
+            related_removals("--system", &system_refs, &arch),
+            related_removals("--user", &user_refs, &arch)
+        )?;
+        extras.extend(user);
+        extras.sort();
+        extras.dedup();
+        Ok(extras)
+    }
+}
+
+async fn installation_refs(items: &[CleanupItem]) -> Result<(Vec<String>, Vec<String>, String)> {
+    if of_kind(items, CleanupKind::UnusedRuntime).next().is_none() {
+        return Ok((Vec::new(), Vec::new(), String::new()));
+    }
+    let arch = default_arch().await;
+    let (system_unused, user_unused) =
+        tokio::try_join!(unused_in("--system", &arch), unused_in("--user", &arch))?;
+    let (system_refs, user_refs) = partition_refs(items, &system_unused, &user_unused);
+    Ok((system_refs, user_refs, arch))
+}
+
+async fn related_removals(
+    installation: &str,
+    refs: &[String],
+    default_arch: &str,
+) -> Result<Vec<String>> {
+    if refs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut args = vec![installation];
+    args.extend(refs.iter().map(String::as_str));
+    let removed = uninstall_dry_run(&args, default_arch)
+        .await?
+        .iter()
+        .map(flatpak_ref)
+        .collect();
+    extra_removals(removed, refs, SourceType::Flatpak)
+}
+
+async fn default_arch() -> String {
+    match run_captured("flatpak", &["--default-arch"]).await {
+        Ok(out) if !out.trim().is_empty() => out.trim().to_string(),
+        result => {
+            tracing::debug!("flatpak --default-arch failed: {:?}", result);
+            fallback_arch(std::env::consts::ARCH).to_string()
+        }
+    }
+}
+
+fn fallback_arch(rust_arch: &str) -> &str {
+    match rust_arch {
+        "x86" => "i386",
+        other => other,
+    }
+}
+
+async fn unused_in(installation: &str, default_arch: &str) -> Result<Vec<CleanupItem>> {
+    uninstall_dry_run(&["--unused", installation], default_arch).await
+}
+
+async fn uninstall_dry_run(args: &[&str], default_arch: &str) -> Result<Vec<CleanupItem>> {
+    let mut full = vec!["uninstall"];
+    full.extend_from_slice(args);
+    let output = run_captured_with_input("flatpak", &full, "n\nn\nn\nn\n", &[1]).await?;
+    let items = parse_unused_output(&output.stdout, default_arch);
+    check_unused_output(&output.stdout, &items).map_err(|e| with_stderr(e, &output.stderr))?;
+    Ok(items)
 }
 
 impl FlatpakSource {
@@ -311,6 +416,104 @@ pub(crate) fn parse_remotes_output(output: &str) -> Vec<Repository> {
     repos
 }
 
+fn numbered_rows(output: &str) -> impl Iterator<Item = Vec<&str>> {
+    output.lines().filter_map(|line| {
+        let fields: Vec<&str> = line.trim_start().split('\t').collect();
+        let digits = fields.first()?.strip_suffix('.')?;
+        (!digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())).then_some(fields)
+    })
+}
+
+/// flatpak omits the Arch column when every row has the default arch.
+pub(crate) fn parse_unused_output(output: &str, default_arch: &str) -> Vec<CleanupItem> {
+    numbered_rows(output)
+        .filter_map(|fields| {
+            let (name, arch, branch) = match fields[..] {
+                [_, _, name, branch, _] => (name, default_arch, branch),
+                [_, _, name, arch, branch, _] => (name, arch.trim(), branch),
+                _ => return None,
+            };
+            let name = name.trim();
+            if name.is_empty() {
+                return None;
+            }
+            Some(CleanupItem {
+                source: SourceType::Flatpak,
+                kind: CleanupKind::UnusedRuntime,
+                name: name.to_string(),
+                version: branch.trim().to_string(),
+                size: None,
+                arch: Some(arch.to_string()),
+            })
+        })
+        .collect()
+}
+
+fn check_unused_output(output: &str, items: &[CleanupItem]) -> Result<()> {
+    if items.is_empty()
+        && (numbered_rows(output).next().is_some() || !output.contains("Nothing unused"))
+    {
+        return Err(PikeError::Parse {
+            source_name: "flatpak".to_string(),
+            detail: format!(
+                "unexpected output from flatpak uninstall: {}",
+                truncate_str(output.trim(), 200)
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn runtime_key(item: &CleanupItem) -> (&str, Option<&str>, &str) {
+    (&item.name, item.arch.as_deref(), &item.version)
+}
+
+fn dedupe_runtimes(mut items: Vec<CleanupItem>) -> Vec<CleanupItem> {
+    items.sort_by(|a, b| runtime_key(a).cmp(&runtime_key(b)));
+    items.dedup_by(|a, b| runtime_key(a) == runtime_key(b));
+    items
+}
+
+fn is_listed(installed_unused: &[CleanupItem], item: &CleanupItem) -> bool {
+    installed_unused
+        .iter()
+        .any(|u| runtime_key(u) == runtime_key(item))
+}
+
+fn flatpak_ref(item: &CleanupItem) -> String {
+    format!(
+        "{}/{}/{}",
+        item.name,
+        item.arch.as_deref().unwrap_or_default(),
+        item.version
+    )
+}
+
+fn partition_refs(
+    items: &[CleanupItem],
+    system_unused: &[CleanupItem],
+    user_unused: &[CleanupItem],
+) -> (Vec<String>, Vec<String>) {
+    let (mut system, mut user) = (Vec::new(), Vec::new());
+    for item in of_kind(items, CleanupKind::UnusedRuntime) {
+        let in_system = is_listed(system_unused, item);
+        let in_user = is_listed(user_unused, item);
+        if in_system {
+            system.push(flatpak_ref(item));
+        }
+        if in_user {
+            user.push(flatpak_ref(item));
+        }
+        if !in_system && !in_user {
+            tracing::warn!(
+                "flatpak: {} is no longer unused, skipping",
+                flatpak_ref(item)
+            );
+        }
+    }
+    (system, user)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,5 +624,161 @@ mod tests {
         assert!(contains_remote(output, "pike-test"));
         assert!(!contains_remote(output, "flathub"));
         assert!(!contains_remote("", "flathub"));
+    }
+
+    const FLATPAK_UNUSED_OUTPUT: &str = "\nThese runtimes in installation 'system' are pinned and won't be removed; see flatpak-pin(1):\n  runtime/org.freedesktop.Sdk/x86_64/25.08\n\n\n 1.\t   \torg.gnome.Platform\t49\tr\n 2.\t   \torg.gnome.Platform.Locale\t49\tr\n 3.\t   \torg.freedesktop.Platform.codecs-extra\t25.08-extra\tr\n\nProceed with these changes to the system installation? [Y/n]: n\n";
+
+    #[test]
+    fn test_parse_flatpak_unused() {
+        let items = parse_unused_output(FLATPAK_UNUSED_OUTPUT, "x86_64");
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].name, "org.gnome.Platform");
+        assert_eq!(items[0].version, "49");
+        assert_eq!(items[0].kind, CleanupKind::UnusedRuntime);
+        assert_eq!(items[0].source, SourceType::Flatpak);
+        assert_eq!(items[2].version, "25.08-extra");
+        assert!(items.iter().all(|i| i.arch.as_deref() == Some("x86_64")));
+    }
+
+    #[test]
+    fn test_parse_flatpak_unused_rejects_bare_dot_index() {
+        assert!(parse_unused_output(" .\t   \torg.gnome.Platform\t49\tr\n", "x86_64").is_empty());
+    }
+
+    fn runtime_item_arch(name: &str, arch: &str, version: &str) -> CleanupItem {
+        CleanupItem {
+            source: SourceType::Flatpak,
+            kind: CleanupKind::UnusedRuntime,
+            name: name.to_string(),
+            version: version.to_string(),
+            size: None,
+            arch: Some(arch.to_string()),
+        }
+    }
+
+    fn runtime_item(name: &str, version: &str) -> CleanupItem {
+        runtime_item_arch(name, "x86_64", version)
+    }
+
+    #[test]
+    fn test_dedupe_runtimes() {
+        let items = vec![
+            runtime_item("org.gnome.Platform.Locale", "49"),
+            runtime_item("org.gnome.Platform", "49"),
+            runtime_item_arch("org.gnome.Platform", "i386", "49"),
+            runtime_item("org.gnome.Platform", "49"),
+            runtime_item("org.gnome.Platform", "48"),
+            runtime_item("org.gnome.Platform.Locale", "49"),
+        ];
+        assert_eq!(
+            dedupe_runtimes(items),
+            vec![
+                runtime_item_arch("org.gnome.Platform", "i386", "49"),
+                runtime_item("org.gnome.Platform", "48"),
+                runtime_item("org.gnome.Platform", "49"),
+                runtime_item("org.gnome.Platform.Locale", "49"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_partition_refs_item_in_both_lists() {
+        let items = vec![runtime_item("org.gnome.Platform", "49")];
+        let unused = vec![runtime_item("org.gnome.Platform", "49")];
+        let expected = vec!["org.gnome.Platform/x86_64/49".to_string()];
+        assert_eq!(
+            partition_refs(&items, &unused, &unused),
+            (expected.clone(), expected)
+        );
+    }
+
+    #[test]
+    fn test_parse_flatpak_unused_with_arch_column() {
+        let output = " 1.\t   \torg.freedesktop.Platform.GL32.default\ti386\t25.08\tr\n 2.\t   \torg.gnome.Platform\tx86_64\t49\tr\n";
+        let items = parse_unused_output(output, "aarch64");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].name, "org.freedesktop.Platform.GL32.default");
+        assert_eq!(items[0].arch.as_deref(), Some("i386"));
+        assert_eq!(items[0].version, "25.08");
+        assert_eq!(items[1].arch.as_deref(), Some("x86_64"));
+        assert_eq!(items[1].version, "49");
+    }
+
+    #[test]
+    fn test_flatpak_ref_formatting() {
+        assert_eq!(
+            flatpak_ref(&runtime_item("org.gnome.Platform", "49")),
+            "org.gnome.Platform/x86_64/49"
+        );
+        assert_eq!(
+            flatpak_ref(&runtime_item_arch("org.gnome.Platform", "i386", "49")),
+            "org.gnome.Platform/i386/49"
+        );
+    }
+
+    #[test]
+    fn test_fallback_arch() {
+        assert_eq!(fallback_arch("x86"), "i386");
+        assert_eq!(fallback_arch("x86_64"), "x86_64");
+        assert_eq!(fallback_arch("aarch64"), "aarch64");
+    }
+
+    #[test]
+    fn test_check_unused_output() {
+        let nothing = "Nothing unused to uninstall\n";
+        assert!(parse_unused_output(nothing, "x86_64").is_empty());
+        assert!(check_unused_output(nothing, &[]).is_ok());
+        assert!(matches!(
+            check_unused_output(
+                "Proceed with these changes to the system installation? [Y/n]: n",
+                &[]
+            ),
+            Err(PikeError::Parse { .. })
+        ));
+        let items = parse_unused_output(FLATPAK_UNUSED_OUTPUT, "x86_64");
+        assert!(check_unused_output(FLATPAK_UNUSED_OUTPUT, &items).is_ok());
+        assert!(matches!(
+            check_unused_output("error: No such installation\n", &[]),
+            Err(PikeError::Parse { .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_flatpak_unused_rejects_unknown_field_count() {
+        let seven = " 1.\t   \torg.gnome.Platform\tx86_64\t49\tr\textra\nNothing unused\n";
+        let items = parse_unused_output(seven, "x86_64");
+        assert!(items.is_empty());
+        assert!(matches!(
+            check_unused_output(seven, &items),
+            Err(PikeError::Parse { .. })
+        ));
+    }
+
+    #[test]
+    fn test_partition_refs_negative_cases() {
+        let unused = vec![runtime_item("org.gnome.Platform", "49")];
+        let not_listed = vec![runtime_item("org.gnome.Platform", "48")];
+        assert_eq!(
+            partition_refs(&not_listed, &unused, &unused),
+            (vec![], vec![])
+        );
+
+        let mut wrong_kind = runtime_item("org.gnome.Platform", "49");
+        wrong_kind.kind = CleanupKind::Orphan;
+        assert_eq!(
+            partition_refs(&[wrong_kind], &unused, &[]),
+            (vec![], vec![])
+        );
+
+        let other_arch = vec![runtime_item_arch("org.gnome.Platform", "i386", "49")];
+        assert_eq!(
+            partition_refs(&other_arch, &unused, &unused),
+            (vec![], vec![])
+        );
+
+        assert_eq!(
+            partition_refs(&unused, &[], &unused),
+            (vec![], vec!["org.gnome.Platform/x86_64/49".to_string()])
+        );
     }
 }

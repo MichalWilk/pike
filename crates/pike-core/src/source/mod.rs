@@ -9,7 +9,9 @@ use async_trait::async_trait;
 
 use crate::config::PrivilegeEscalation;
 use crate::error::PikeError;
-use crate::package::{Package, PackageUpdate, RepoMethod, Repository, SourceType};
+use crate::package::{
+    CleanupItem, CleanupKind, Package, PackageUpdate, RepoMethod, Repository, SourceType,
+};
 
 static PRIVILEGE_METHOD: OnceLock<PrivilegeEscalation> = OnceLock::new();
 
@@ -34,7 +36,6 @@ pub trait PackageSource: Send + Sync {
     async fn install(&self, package: &str) -> Result<()>;
     async fn remove(&self, package: &str, purge: bool) -> Result<()>;
 
-    async fn autoremove(&self) -> Result<()>;
     async fn check_updates(&self) -> Result<Vec<PackageUpdate>>;
     async fn update(&self, package: &str) -> Result<()>;
     async fn update_all(&self) -> Result<()>;
@@ -103,6 +104,27 @@ pub trait PackageSource: Send + Sync {
     async fn import_keys(&self) -> Result<()> {
         Ok(())
     }
+
+    /// Only the requested `kinds` are queried.
+    async fn list_cleanup(
+        &self,
+        _kinds: &[CleanupKind],
+        _keep_kernels: usize,
+    ) -> Result<Vec<CleanupItem>> {
+        Ok(Vec::new())
+    }
+
+    async fn clean(&self, _items: &[CleanupItem]) -> Result<()> {
+        Err(PikeError::Other(format!(
+            "{} does not support cleanup",
+            self.name()
+        )))
+    }
+
+    /// Packages `clean(items)` would remove beyond `items` themselves.
+    async fn preview_clean(&self, _items: &[CleanupItem]) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
 }
 
 pub fn create_sources(active: &[SourceType]) -> Vec<Box<dyn PackageSource>> {
@@ -148,15 +170,63 @@ pub async fn run_captured_allow_exit(
     args: &[&str],
     allowed_codes: &[i32],
 ) -> Result<String> {
+    Ok(run_captured_impl(cmd, args, None, false, allowed_codes)
+        .await?
+        .stdout)
+}
+
+pub(crate) async fn run_captured_c(
+    cmd: &str,
+    args: &[&str],
+    allowed_codes: &[i32],
+) -> Result<String> {
+    Ok(run_captured_c_full(cmd, args, allowed_codes).await?.stdout)
+}
+
+pub(crate) struct CapturedOutput {
+    pub stdout: String,
+    pub stderr: String,
+}
+
+pub(crate) async fn run_captured_c_full(
+    cmd: &str,
+    args: &[&str],
+    allowed_codes: &[i32],
+) -> Result<CapturedOutput> {
+    run_captured_impl(cmd, args, None, true, allowed_codes).await
+}
+
+async fn run_captured_impl(
+    cmd: &str,
+    args: &[&str],
+    input: Option<&str>,
+    c_locale: bool,
+    allowed_codes: &[i32],
+) -> Result<CapturedOutput> {
+    use tokio::io::AsyncWriteExt;
     tracing::debug!("exec: {}", format_cmd(cmd, args));
-    let output = tokio::process::Command::new(cmd)
+    let mut command = tokio::process::Command::new(cmd);
+    command
         .args(args)
-        .stdin(std::process::Stdio::null())
+        .stdin(if input.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?
-        .wait_with_output()
-        .await?;
+        .stderr(std::process::Stdio::piped());
+    if c_locale {
+        command.env("LC_ALL", "C");
+    }
+    let mut child = command.spawn()?;
+    if let Some(input) = input
+        && let Some(mut stdin) = child.stdin.take()
+        && let Err(e) = stdin.write_all(input.as_bytes()).await
+        && e.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        return Err(e.into());
+    }
+    let output = child.wait_with_output().await?;
     let code = output.status.code().unwrap_or(-1);
     if !output.status.success() && !allowed_codes.contains(&code) {
         return Err(PikeError::CommandFailed {
@@ -165,7 +235,10 @@ pub async fn run_captured_allow_exit(
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         });
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(CapturedOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
 }
 
 pub async fn run_captured_stderr(cmd: &str, args: &[&str]) -> Result<String> {
@@ -179,6 +252,16 @@ pub async fn run_captured_stderr(cmd: &str, args: &[&str]) -> Result<String> {
         .wait_with_output()
         .await?;
     Ok(String::from_utf8_lossy(&output.stderr).into_owned())
+}
+
+/// `input` is written in full before output is read, so it must fit the pipe buffer.
+pub(crate) async fn run_captured_with_input(
+    cmd: &str,
+    args: &[&str],
+    input: &str,
+    allowed_codes: &[i32],
+) -> Result<CapturedOutput> {
+    run_captured_impl(cmd, args, Some(input), true, allowed_codes).await
 }
 
 pub async fn run_interactive(cmd: &str, args: &[&str]) -> Result<()> {
@@ -248,4 +331,29 @@ fn binary_exists_sync(name: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_run_captured_with_input() {
+        let output = run_captured_with_input("cat", &[], "n\n", &[])
+            .await
+            .unwrap();
+        assert_eq!(output.stdout, "n\n");
+    }
+
+    #[tokio::test]
+    async fn test_run_captured_allowed_exit_code() {
+        let args = ["-c", "echo out; echo err >&2; exit 1"];
+        let output = run_captured_c_full("sh", &args, &[1]).await.unwrap();
+        assert_eq!(output.stdout, "out\n");
+        assert_eq!(output.stderr, "err\n");
+        assert!(matches!(
+            run_captured_c_full("sh", &args, &[]).await,
+            Err(PikeError::CommandFailed { exit_code: 1, .. })
+        ));
+    }
 }

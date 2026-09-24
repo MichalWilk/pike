@@ -1,5 +1,6 @@
 use crossterm::event::KeyCode;
-use pike_core::package::{RepoMethod, SourceType};
+use pike_core::error::PikeError;
+use pike_core::package::{CleanupItem, RepoMethod, SourceType};
 use ratatui::layout::Rect;
 use ratatui::widgets::TableState;
 use rust_i18n::t;
@@ -17,6 +18,8 @@ pub(crate) enum SettingsRow {
     DaemonStatus,
     DaemonInterval,
     NotifyToggle,
+    KeepKernels,
+    ConfirmToggle,
 }
 
 #[derive(Clone, Copy)]
@@ -51,6 +54,8 @@ impl HitState {
     }
 }
 
+pub(crate) const CHECKBOX_WIDTH: u16 = 4;
+
 const SPINNER_FRAMES: &[char] = &['|', '/', '-', '\\'];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,16 +64,18 @@ pub enum Tab {
     Installed,
     Updates,
     Repos,
+    Cleanup,
     Settings,
     About,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] = [
+    pub const ALL: [Tab; 7] = [
         Tab::Search,
         Tab::Installed,
         Tab::Updates,
         Tab::Repos,
+        Tab::Cleanup,
         Tab::Settings,
         Tab::About,
     ];
@@ -79,6 +86,7 @@ impl Tab {
             Tab::Installed => "2",
             Tab::Updates => "3",
             Tab::Repos => "4",
+            Tab::Cleanup => "5",
             Tab::Settings => "9",
             Tab::About => "0",
         }
@@ -90,6 +98,7 @@ impl Tab {
             Tab::Installed => t!("tui.tab.installed"),
             Tab::Updates => t!("tui.tab.updates"),
             Tab::Repos => t!("tui.tab.repos"),
+            Tab::Cleanup => t!("tui.tab.cleanup"),
             Tab::Settings => t!("tui.tab.settings"),
             Tab::About => t!("tui.tab.about"),
         }
@@ -118,6 +127,7 @@ pub(crate) struct ViewState {
     pub(crate) installed_table: TableState,
     pub(crate) updates_table: TableState,
     pub(crate) repos_table: TableState,
+    pub(crate) cleanup_table: TableState,
     pub(crate) settings_table: TableState,
     pub(crate) about_table: TableState,
     pub(crate) hover_row: Option<usize>,
@@ -136,6 +146,7 @@ impl ViewState {
                 TableState::default()
             },
             repos_table: TableState::default(),
+            cleanup_table: TableState::default(),
             settings_table: TableState::default().with_selected(1),
             about_table: TableState::default().with_selected(0),
             hover_row: None,
@@ -158,6 +169,7 @@ impl ViewState {
             Tab::Installed => &mut self.installed_table,
             Tab::Updates => &mut self.updates_table,
             Tab::Repos => &mut self.repos_table,
+            Tab::Cleanup => &mut self.cleanup_table,
             Tab::Settings => &mut self.settings_table,
             Tab::About => &mut self.about_table,
         }
@@ -169,6 +181,7 @@ impl ViewState {
             Tab::Installed => self.installed_table.offset(),
             Tab::Updates => self.updates_table.offset(),
             Tab::Repos => self.repos_table.offset(),
+            Tab::Cleanup => self.cleanup_table.offset(),
             Tab::Settings => self.settings_table.offset(),
             Tab::About => 0,
         }
@@ -199,7 +212,6 @@ pub enum Action {
     RemovePackage(String, Option<SourceType>),
     UpdatePackage(String, SourceType),
     UpdateAll(Vec<(String, SourceType)>),
-    Autoremove,
     RefreshUpdates,
     RefreshInstalled,
     RefreshRepos,
@@ -208,4 +220,15 @@ pub enum Action {
     DeleteRepo(String, SourceType),
     OpenUrl(String),
     SaveSettings,
+    Clean(Vec<CleanupItem>),
+    RefreshCleanup,
+}
+
+pub(crate) type CleanPreview = Vec<(SourceType, Result<Vec<String>, PikeError>)>;
+
+pub(crate) struct PendingConfirm {
+    pub(crate) action: Action,
+    pub(crate) title: String,
+    pub(crate) lines: Vec<String>,
+    pub(crate) preview: Option<CleanPreview>,
 }

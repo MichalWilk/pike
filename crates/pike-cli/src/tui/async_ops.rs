@@ -1,18 +1,30 @@
 use rust_i18n::t;
 use tokio::sync::mpsc;
 
+use pike_core::cleanup::{preview_cleanup, scan_cleanup};
 use pike_core::config::Config;
-use pike_core::package::{Package, PackageUpdate, Repository, SourceType};
+use pike_core::package::{
+    CleanupItem, CleanupKind, CleanupScan, Package, PackageUpdate, Repository, SourceType,
+};
 use pike_core::source::{PackageSource, create_sources};
 use pike_core::util::{filter_and_sort_packages, gather, sort_by_source};
 
 use super::app::App;
+use super::types::CleanPreview;
 
 pub(super) enum AsyncResult {
     SearchResults(Vec<Package>),
     Updates(Vec<PackageUpdate>),
     Installed(Vec<Package>),
     Repos(Vec<Repository>),
+    Cleanup {
+        scan: CleanupScan,
+        keep: usize,
+    },
+    CleanPreview {
+        items: Vec<CleanupItem>,
+        extras: CleanPreview,
+    },
 }
 
 pub(super) fn spawn_search(
@@ -73,6 +85,37 @@ pub(super) fn spawn_list_repos(
     tokio::spawn(async move {
         let repos = list_repos_bg(&sources).await;
         let _ = tx.send(AsyncResult::Repos(repos));
+    });
+}
+
+pub(super) fn spawn_list_cleanup(
+    app: &mut App,
+    tx: &mpsc::UnboundedSender<AsyncResult>,
+    active_sources: &[SourceType],
+) {
+    app.cleanup.loading = true;
+    app.set_status(t!("tui.status.loading-cleanup"));
+    let keep = app.config.cleanup.keep_kernels();
+    let tx = tx.clone();
+    let sources = create_sources(active_sources);
+    tokio::spawn(async move {
+        let refs: Vec<&dyn PackageSource> = sources.iter().map(|s| s.as_ref()).collect();
+        let scan = scan_cleanup(&refs, &CleanupKind::ALL, keep).await;
+        let _ = tx.send(AsyncResult::Cleanup { scan, keep });
+    });
+}
+
+pub(super) fn spawn_clean_preview(
+    tx: &mpsc::UnboundedSender<AsyncResult>,
+    active_sources: &[SourceType],
+    items: Vec<CleanupItem>,
+) {
+    let tx = tx.clone();
+    let sources = create_sources(active_sources);
+    tokio::spawn(async move {
+        let refs: Vec<&dyn PackageSource> = sources.iter().map(|s| s.as_ref()).collect();
+        let extras = preview_cleanup(&refs, &items).await;
+        let _ = tx.send(AsyncResult::CleanPreview { items, extras });
     });
 }
 
