@@ -330,6 +330,7 @@ pub(crate) fn parse_search_output(output: &str) -> Vec<Package> {
         {
             packages.push(Package {
                 name,
+                display_name: None,
                 version: String::new(),
                 source: SourceType::Dnf,
                 arch: Some(arch),
@@ -392,6 +393,7 @@ pub(crate) fn parse_list_installed_output(output: &str) -> Vec<Package> {
             let (name, arch) = extract_package_name_arch(fields[0])?;
             Some(Package {
                 name,
+                display_name: None,
                 version: fields[1].to_string(),
                 source: SourceType::Dnf,
                 arch: Some(arch),

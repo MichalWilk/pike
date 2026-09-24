@@ -347,6 +347,7 @@ fn parse_tab_lines<T>(output: &str, min_fields: usize, mapper: impl Fn(&[&str]) 
 pub(crate) fn parse_search_output(output: &str) -> Vec<Package> {
     parse_tab_lines(output, 4, |f| Package {
         name: f[2].to_string(),
+        display_name: non_empty(f[0]),
         version: f[3].to_string(),
         source: SourceType::Flatpak,
         arch: None,
@@ -367,6 +368,7 @@ pub(crate) fn parse_updates_output(output: &str) -> Vec<PackageUpdate> {
 pub(crate) fn parse_list_installed_output(output: &str) -> Vec<Package> {
     parse_tab_lines(output, 4, |f| Package {
         name: f[1].to_string(),
+        display_name: None,
         version: f[2].to_string(),
         source: SourceType::Flatpak,
         arch: non_empty(f[3]),
@@ -528,6 +530,7 @@ mod tests {
         assert_eq!(packages.len(), 2);
 
         assert_eq!(packages[0].name, "org.mozilla.firefox");
+        assert_eq!(packages[0].display_name.as_deref(), Some("Firefox"));
         assert_eq!(packages[0].version, "136.0");
         assert_eq!(packages[0].source, SourceType::Flatpak);
         assert!(packages[0].arch.is_none());
@@ -537,6 +540,7 @@ mod tests {
         );
 
         assert_eq!(packages[1].name, "org.gimp.GIMP");
+        assert_eq!(packages[1].display_name.as_deref(), Some("GIMP"));
         assert_eq!(packages[1].version, "2.10.38");
         assert!(packages[1].arch.is_none());
     }

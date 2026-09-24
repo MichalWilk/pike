@@ -105,7 +105,7 @@ See [Waybar Integration](#waybar-integration) below.
 ## Usage
 
 ```bash
-pike search firefox                # search across all enabled backends
+pike search firefox                # search across all enabled backends, best matches first
 pike install firefox               # auto-detect source
 pike install firefox -S flatpak    # force source (dnf, apt, or flatpak)
 pike install vim git curl          # install multiple packages
@@ -142,6 +142,8 @@ pike daemon                        # run background daemon (periodic checks + no
 pike waybar                        # continuous waybar output (requires daemon)
 pike tui                           # interactive terminal UI
 ```
+
+**Search ranking:** results are ordered by relevance (exact name, name prefix, name contains, description contains), then by source and name. For flatpak the display name counts as the name and the last segment of the app ID as a name prefix, so `org.mozilla.firefox` (display name "Firefox") is an exact match for `firefox` and `com.spotify.Client` (display name "Spotify") for `spotify`.
 
 **Source auto-detection:** when no `-S` flag is given, pike searches all enabled sources in parallel. If the package is found in exactly one source, that source is used. If found in multiple sources, pike returns an error asking you to specify with `-S dnf`, `-S apt`, or `-S flatpak`. There is no implicit priority between sources.
 

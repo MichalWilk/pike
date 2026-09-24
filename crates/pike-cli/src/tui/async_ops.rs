@@ -127,7 +127,7 @@ async fn search_bg(
     let futures: Vec<_> = sources.iter().map(|s| s.search(query)).collect();
     let mut packages = gather(futures, "search").await;
 
-    filter_and_sort_packages(&mut packages, config);
+    filter_and_sort_packages(&mut packages, config, query);
     packages
 }
 
