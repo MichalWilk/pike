@@ -10,12 +10,15 @@ use unicode_width::UnicodeWidthStr;
 
 use pike_core::manager::PackageManager;
 use pike_core::package::{CleanupItem, SourceType};
+use pike_core::source::PendingGpgKey;
 use pike_core::util::truncate_str;
 
 use crate::ipc::notify_daemon_recheck;
 
 use super::app::{Action, App};
-use super::async_ops::{AsyncResult, spawn_check_updates, spawn_list_repos, spawn_search};
+use super::async_ops::{
+    AsyncResult, spawn_check_updates, spawn_key_check, spawn_list_repos, spawn_search,
+};
 use super::types::AddRepoParams;
 
 pub(super) async fn handle_action(
@@ -37,6 +40,24 @@ pub(super) async fn handle_action(
         }
         Action::RefreshUpdates => {
             spawn_check_updates(app, tx, active_sources);
+            spawn_key_check(tx, active_sources);
+        }
+        Action::ImportKeys => {
+            let ok = import_keys(terminal, manager, &app.pending_keys).await?;
+            spawn_key_check(tx, active_sources);
+            spawn_check_updates(app, tx, active_sources);
+            app.installed.loaded = false;
+            if !app.search.input.is_empty() {
+                let config = app.config.clone();
+                let query = app.search.input.clone();
+                spawn_search(app, tx, active_sources, query, config);
+            }
+            spawn_daemon_recheck();
+            app.set_status(if ok {
+                t!("tui.status.keys-imported")
+            } else {
+                t!("tui.status.keys-import-failed")
+            });
         }
         Action::RefreshInstalled => {
             super::async_ops::spawn_list_installed(app, tx, active_sources);
@@ -248,6 +269,38 @@ async fn clean(
     .await?;
     app.last_clean_ok = Some(ok);
     Ok(())
+}
+
+async fn import_keys(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    manager: &PackageManager,
+    pending: &[(SourceType, Vec<PendingGpgKey>)],
+) -> anyhow::Result<bool> {
+    let label = t!("tui.action.importing-keys");
+    let items: Vec<String> = pending
+        .iter()
+        .flat_map(|(_, keys)| keys)
+        .map(|k| format!("{} {}", k.key_id, k.user_id))
+        .collect();
+    run_interactive(terminal, &label, &items, || async {
+        let mut failed = false;
+        for (st, _) in pending {
+            if let Err(e) = manager.import_keys(*st).await {
+                let msg = t!("tui.action.error", err = e);
+                eprintln!("  [{st}] {msg}");
+                failed = true;
+            }
+        }
+        if failed {
+            let msg = t!("tui.status.keys-import-failed");
+            eprintln!("\n  {msg}");
+            anyhow::bail!("key import failed");
+        }
+        let msg = t!("tui.status.keys-imported");
+        eprintln!("\n  {msg}");
+        Ok(())
+    })
+    .await
 }
 
 async fn toggle_repo(

@@ -135,6 +135,8 @@ impl App {
                 vec![]
             }
 
+            KeyCode::Char('g') if !self.pending_keys.is_empty() => vec![Action::ImportKeys],
+
             _ => self.handle_tab_key(key, view),
         }
     }
@@ -808,6 +810,36 @@ mod tests {
         assert!(!view.cursor_pointer);
         assert_eq!(app.settings_input.as_deref(), Some("#"));
         assert_eq!(app.input_mode, InputMode::Editing);
+    }
+
+    #[test]
+    fn test_import_keys_key_only_when_pending() {
+        let (mut app, mut view) = cleanup_app();
+        assert!(press(&mut app, &mut view, 'g').is_empty());
+
+        app.pending_keys = vec![(
+            SourceType::Dnf,
+            vec![pike_core::source::PendingGpgKey {
+                key_id: "0xDE226D6F".into(),
+                user_id: "Terra".into(),
+                fingerprint: String::new(),
+            }],
+        )];
+        assert!(matches!(
+            press(&mut app, &mut view, 'g').as_slice(),
+            [Action::ImportKeys]
+        ));
+
+        press(&mut app, &mut view, '/');
+        assert!(press(&mut app, &mut view, 'g').is_empty());
+        assert_eq!(app.cleanup.filter, "g");
+        app.cleanup.filter.clear();
+        app.input_mode = InputMode::Normal;
+
+        assert!(press(&mut app, &mut view, 'c').is_empty());
+        assert!(app.pending_confirm.is_some());
+        assert!(press(&mut app, &mut view, 'g').is_empty());
+        assert!(app.pending_confirm.is_some());
     }
 
     #[test]

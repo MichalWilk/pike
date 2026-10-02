@@ -121,6 +121,7 @@ fields = "fields"
 toggle-gpg = "toggle"
 filter = "filter"
 cancel = "cancel"
+import-keys = "import keys"
 
 [tui.search]
 searching = "searching…"
@@ -229,6 +230,8 @@ cleanup-failed = "Could not list cleanup items from %{source}"
 cleanup-complete = "Cleanup complete"
 cleanup-error = "Cleanup failed"
 cancelled = "Cancelled"
+keys-imported = "Signing keys imported"
+keys-import-failed = "Import failed"
 
 [tui.action]
 installing = "Installing %{pkg}"
@@ -248,6 +251,7 @@ error = "Error: %{err}"
 added-repo = "Added repo"
 removed = "Removed %{id}"
 return-prompt = "Press Enter to return to TUI..."
+importing-keys = "Importing repository signing keys"
 
 [tui.confirm]
 checking-deps = "checking dependencies…"
@@ -285,6 +289,9 @@ repos-total_one = "%{total} repo (%{enabled} enabled)"
 repos-total_other = "%{total} repos (%{enabled} enabled)"
 cleanup-selected = "%{found} found, %{count} selected, %{size} to free"
 cleanup-selected-filtered = "%{shown} of %{total} found, %{count} selected, %{size} to free"
+keys-pending_one = "%{source}: %{count} repository signing key not imported"
+keys-pending_other = "%{source}: %{count} repository signing keys not imported"
+keys-pending-warning = "⚠  %{sources}, some packages are hidden - press g to import"
 
 [daemon]
 listening = "daemon: listening on %{path}"

@@ -8,7 +8,7 @@ use crate::package::{
     CleanupItem, CleanupKind, CleanupScan, Package, PackageUpdate, RepoMethod, Repository,
     SourceType, StatusSummary,
 };
-use crate::source::{PackageSource, PendingGpgKey, create_sources};
+use crate::source::{PackageSource, PendingGpgKey, create_sources, pending_gpg_keys};
 use crate::util::{filter_and_sort_packages, gather, sort_by_source};
 
 pub struct PackageManager {
@@ -194,15 +194,7 @@ impl PackageManager {
     }
 
     pub async fn refresh_preflight(&self) -> Vec<(SourceType, Vec<PendingGpgKey>)> {
-        let mut pending = Vec::new();
-        for source in &self.sources {
-            match source.refresh_preflight().await {
-                Ok(keys) if !keys.is_empty() => pending.push((source.source_type(), keys)),
-                Ok(_) => {}
-                Err(e) => tracing::warn!("refresh_preflight {} failed: {}", source.name(), e),
-            }
-        }
-        pending
+        pending_gpg_keys(&self.filtered_sources(None)).await
     }
 
     pub async fn import_keys(&self, source: SourceType) -> Result<(), PikeError> {

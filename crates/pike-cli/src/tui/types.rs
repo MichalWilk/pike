@@ -225,6 +225,7 @@ pub enum Action {
     SaveSettings,
     Clean(Vec<CleanupItem>),
     RefreshCleanup,
+    ImportKeys,
 }
 
 pub(crate) type CleanPreview = Vec<(SourceType, Result<Vec<String>, PikeError>)>;

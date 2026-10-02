@@ -127,6 +127,7 @@ fields = "pola"
 toggle-gpg = "przełącz"
 filter = "filtruj"
 cancel = "anuluj"
+import-keys = "importuj klucze"
 
 [tui.search]
 searching = "wyszukiwanie…"
@@ -239,6 +240,8 @@ cleanup-failed = "Nie udało się pobrać listy do wyczyszczenia z %{source}"
 cleanup-complete = "Czyszczenie zakończone"
 cleanup-error = "Czyszczenie nie powiodło się"
 cancelled = "Anulowano"
+keys-imported = "Zaimportowano klucze podpisu"
+keys-import-failed = "Import nie powiódł się"
 
 [tui.action]
 installing = "Instalowanie %{pkg}"
@@ -258,6 +261,7 @@ error = "Błąd: %{err}"
 added-repo = "Dodano repozytorium"
 removed = "Usunięto %{id}"
 return-prompt = "Naciśnij Enter, aby wrócić do TUI..."
+importing-keys = "Importowanie kluczy podpisu repozytoriów"
 
 [tui.confirm]
 checking-deps = "sprawdzanie zależności…"
@@ -300,6 +304,10 @@ repos-total_few = "%{total} repozytoria (włączonych: %{enabled})"
 repos-total_many = "%{total} repozytoriów (włączonych: %{enabled})"
 cleanup-selected = "znaleziono %{found}, zaznaczono %{count}, %{size} do zwolnienia"
 cleanup-selected-filtered = "znaleziono %{shown} z %{total}, zaznaczono %{count}, %{size} do zwolnienia"
+keys-pending_one = "%{source}: %{count} klucz podpisu repozytorium nie został zaimportowany"
+keys-pending_few = "%{source}: %{count} klucze podpisu repozytoriów nie zostały zaimportowane"
+keys-pending_many = "%{source}: %{count} kluczy podpisu repozytoriów nie zostało zaimportowanych"
+keys-pending-warning = "⚠  %{sources}, część pakietów jest ukryta - naciśnij g, aby zaimportować"
 
 [daemon]
 listening = "demon: nasłuchuje na %{path}"

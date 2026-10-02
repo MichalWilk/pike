@@ -7,6 +7,10 @@ use ratatui::widgets::Paragraph;
 use rust_i18n::t;
 use unicode_width::UnicodeWidthStr;
 
+use pike_core::package::SourceType;
+use pike_core::source::PendingGpgKey;
+
+use crate::i18n::plural_key;
 use crate::tui::app::App;
 use crate::tui::types::{ClickAction, ClickTarget, HitState, InputMode, Tab, ViewState};
 
@@ -134,6 +138,15 @@ pub(super) fn render_context_bar(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    if app.shows_keys_warning() {
+        let line = Line::from(Span::styled(
+            pending_keys_warning(&app.pending_keys),
+            Style::default().fg(RED),
+        ));
+        frame.render_widget(Paragraph::new(line), area);
+        return;
+    }
+
     let line = match app.tab {
         Tab::Search => {
             if app.search.results.loading || app.search.results.items.is_empty() {
@@ -250,6 +263,22 @@ pub(super) fn render_footer(
     frame.render_widget(Paragraph::new(right_line), right_area);
 }
 
+fn pending_keys_warning(pending: &[(SourceType, Vec<PendingGpgKey>)]) -> String {
+    let sources = pending
+        .iter()
+        .map(|(st, keys)| {
+            t!(
+                &plural_key("tui.context.keys-pending", keys.len()),
+                source = st.display_name(),
+                count = keys.len()
+            )
+            .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    t!("tui.context.keys-pending-warning", sources = sources).to_string()
+}
+
 fn cleanup_context_line(app: &App) -> Option<Line<'static>> {
     let mut spans = Vec::new();
     if let Some(ok) = app.last_clean_ok {
@@ -343,7 +372,7 @@ fn footer_buttons(app: &App, view: &ViewState) -> (Vec<ButtonDef>, Option<Button
         return (confirm_buttons(), None);
     }
     let quit = ButtonDef::new("q", "tui.button.quit", KeyCode::Char('q'));
-    let actions = match app.tab {
+    let mut actions = match app.tab {
         Tab::Search => search_buttons(app, view),
         Tab::Installed => installed_buttons(app),
         Tab::Updates => updates_buttons(app),
@@ -352,6 +381,14 @@ fn footer_buttons(app: &App, view: &ViewState) -> (Vec<ButtonDef>, Option<Button
         Tab::Settings => settings_buttons(),
         Tab::About => vec![ButtonDef::new("↵", "tui.about.open-link", KeyCode::Enter)],
     };
+    let repos_form_open = app.tab == Tab::Repos && app.repos.add_form.active;
+    if app.shows_keys_warning() && app.input_mode == InputMode::Normal && !repos_form_open {
+        actions.push(ButtonDef::new(
+            "g",
+            "tui.button.import-keys",
+            KeyCode::Char('g'),
+        ));
+    }
     (actions, Some(quit))
 }
 
@@ -539,4 +576,31 @@ fn cleanup_buttons(app: &App) -> Vec<ButtonDef> {
 
 fn settings_buttons() -> Vec<ButtonDef> {
     vec![ButtonDef::new("e", "tui.button.toggle", KeyCode::Char('e'))]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keys(n: usize) -> Vec<PendingGpgKey> {
+        (0..n)
+            .map(|i| PendingGpgKey {
+                key_id: format!("0x{i:08X}"),
+                user_id: String::new(),
+                fingerprint: String::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_pending_keys_warning_counts_per_source() {
+        assert_eq!(
+            pending_keys_warning(&[(SourceType::Dnf, keys(2))]),
+            "⚠  dnf: 2 repository signing keys not imported, some packages are hidden - press g to import"
+        );
+        assert_eq!(
+            pending_keys_warning(&[(SourceType::Dnf, keys(1)), (SourceType::Flatpak, keys(3))]),
+            "⚠  dnf: 1 repository signing key not imported, flatpak: 3 repository signing keys not imported, some packages are hidden - press g to import"
+        );
+    }
 }

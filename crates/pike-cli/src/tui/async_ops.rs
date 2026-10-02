@@ -6,7 +6,7 @@ use pike_core::config::Config;
 use pike_core::package::{
     CleanupItem, CleanupKind, CleanupScan, Package, PackageUpdate, Repository, SourceType,
 };
-use pike_core::source::{PackageSource, create_sources};
+use pike_core::source::{PackageSource, PendingGpgKey, create_sources, pending_gpg_keys};
 use pike_core::util::{filter_and_sort_packages, gather, sort_by_source};
 
 use super::app::App;
@@ -25,6 +25,20 @@ pub(super) enum AsyncResult {
         items: Vec<CleanupItem>,
         extras: CleanPreview,
     },
+    PendingKeys(Vec<(SourceType, Vec<PendingGpgKey>)>),
+}
+
+pub(super) fn spawn_key_check(
+    tx: &mpsc::UnboundedSender<AsyncResult>,
+    active_sources: &[SourceType],
+) {
+    let tx = tx.clone();
+    let sources = create_sources(active_sources);
+    tokio::spawn(async move {
+        let refs: Vec<&dyn PackageSource> = sources.iter().map(|s| s.as_ref()).collect();
+        let pending = pending_gpg_keys(&refs).await;
+        let _ = tx.send(AsyncResult::PendingKeys(pending));
+    });
 }
 
 pub(super) fn spawn_search(

@@ -127,6 +127,23 @@ pub trait PackageSource: Send + Sync {
     }
 }
 
+/// Sources whose preflight fails are logged and skipped.
+pub async fn pending_gpg_keys(
+    sources: &[&dyn PackageSource],
+) -> Vec<(SourceType, Vec<PendingGpgKey>)> {
+    let futures: Vec<_> = sources.iter().map(|s| s.refresh_preflight()).collect();
+    let results = futures::future::join_all(futures).await;
+    let mut pending = Vec::new();
+    for (source, result) in sources.iter().zip(results) {
+        match result {
+            Ok(keys) if !keys.is_empty() => pending.push((source.source_type(), keys)),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("refresh_preflight {} failed: {}", source.name(), e),
+        }
+    }
+    pending
+}
+
 pub fn create_sources(active: &[SourceType]) -> Vec<Box<dyn PackageSource>> {
     active
         .iter()
@@ -355,5 +372,70 @@ mod tests {
             run_captured_c_full("sh", &args, &[]).await,
             Err(PikeError::CommandFailed { exit_code: 1, .. })
         ));
+    }
+
+    struct KeyStub {
+        st: SourceType,
+        keys: Option<Vec<PendingGpgKey>>,
+    }
+
+    #[async_trait]
+    impl PackageSource for KeyStub {
+        fn name(&self) -> &str {
+            "stub"
+        }
+        fn source_type(&self) -> SourceType {
+            self.st
+        }
+        async fn search(&self, _query: &str) -> Result<Vec<Package>> {
+            Ok(Vec::new())
+        }
+        async fn install(&self, _package: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn remove(&self, _package: &str, _purge: bool) -> Result<()> {
+            Ok(())
+        }
+        async fn check_updates(&self) -> Result<Vec<PackageUpdate>> {
+            Ok(Vec::new())
+        }
+        async fn update(&self, _package: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn update_all(&self) -> Result<()> {
+            Ok(())
+        }
+        async fn list_installed(&self) -> Result<Vec<Package>> {
+            Ok(Vec::new())
+        }
+        async fn refresh_preflight(&self) -> Result<Vec<PendingGpgKey>> {
+            self.keys
+                .clone()
+                .ok_or_else(|| PikeError::Other("stub failure".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_pending_gpg_keys_skips_empty_and_failing() {
+        let key = PendingGpgKey {
+            key_id: "0xDE226D6F".into(),
+            user_id: "Terra 44 <security@fyralabs.com>".into(),
+            fingerprint: "AE09157A4DE88B497EA1D5D300CDAB43DE226D6F".into(),
+        };
+        let with_keys = KeyStub {
+            st: SourceType::Dnf,
+            keys: Some(vec![key.clone(), key.clone()]),
+        };
+        let empty = KeyStub {
+            st: SourceType::Flatpak,
+            keys: Some(Vec::new()),
+        };
+        let failing = KeyStub {
+            st: SourceType::Apt,
+            keys: None,
+        };
+        let sources: [&dyn PackageSource; 3] = [&failing, &with_keys, &empty];
+        let pending = pending_gpg_keys(&sources).await;
+        assert_eq!(pending, vec![(SourceType::Dnf, vec![key.clone(), key])]);
     }
 }

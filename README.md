@@ -193,6 +193,8 @@ Navigation: `j`/`k` or arrows, `Tab`/`Shift+Tab` cycle tabs, mouse scroll/click,
 
 Install, remove, clean and repo changes (add, delete, enable/disable) open a confirmation dialog: `Enter` or `y` confirms, `q`, `Esc` or `n` cancel the confirmation window; `q` quits only when no window or input field is active. While it is open, the footer shows only the confirm and cancel buttons, which also work with the mouse. For clean, the dialog also lists packages that would be removed as dependencies. Updates are not confirmed. Turn the dialog off with "Confirm actions" in Settings or `confirm_actions = false` under `[display]`.
 
+When a dnf repository's signing key has not been imported yet, its packages are missing from Search and Updates; the TUI then shows a red warning above the list (on all tabs except Settings and About) and a `g import keys` button. `g` leaves the TUI and runs the import, where dnf asks about each key, then refreshes updates, installed packages and the current search.
+
 The TUI accent color (highlights, selection background, active tab, spinners, dialog border) comes from `accent_color` under `[display]` (hex `#rrggbb`, default `#fe8019`). The "Accent color" row in Settings cycles presets (orange, blue, green, purple, red) and then "custom". With "custom" selected a "Custom hex" row appears below: `e` opens an input for six hex digits, `Enter` saves, `Esc` cancels. Any `#rrggbb` set in the file shows as "custom" with its hex. An invalid value in the file falls back to the default.
 
 The repo add wizard (`a` on Repos tab) guides through source selection, then method selection (for dnf: .repo file, COPR, base URL, RPM package), then shows method-specific input fields.

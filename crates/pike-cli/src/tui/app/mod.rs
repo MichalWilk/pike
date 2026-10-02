@@ -9,6 +9,7 @@ use pike_core::package::{
     CleanupItem, CleanupKind, CleanupScan, Package, PackageUpdate, RepoMethod, Repository,
     SourceType,
 };
+use pike_core::source::PendingGpgKey;
 use ratatui::widgets::TableState;
 use rust_i18n::t;
 
@@ -195,6 +196,7 @@ pub(crate) struct App {
     pub(crate) cleanup_selected: HashSet<usize>,
     pub(crate) last_clean_ok: Option<bool>,
     pub(crate) pending_confirm: Option<PendingConfirm>,
+    pub(crate) pending_keys: Vec<(SourceType, Vec<PendingGpgKey>)>,
 
     pub(crate) config: Config,
     pub(crate) status_message: String,
@@ -273,6 +275,7 @@ impl App {
             cleanup_selected: HashSet::new(),
             last_clean_ok: None,
             pending_confirm: None,
+            pending_keys: Vec::new(),
             config,
             status_message: String::new(),
             active_sources,
@@ -295,6 +298,10 @@ impl App {
             .filter(|&&st| self.config.sources.enabled(st) && !self.has_source(st))
             .map(|st| st.binary_name())
             .collect()
+    }
+
+    pub(crate) fn shows_keys_warning(&self) -> bool {
+        !self.pending_keys.is_empty() && !matches!(self.tab, Tab::Settings | Tab::About)
     }
 
     pub(crate) fn set_search_results(&mut self, results: Vec<Package>, view: &mut ViewState) {
