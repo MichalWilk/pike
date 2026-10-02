@@ -142,7 +142,8 @@ pub(super) fn render_context_bar(frame: &mut Frame, app: &App, area: Rect) {
         let line = Line::from(Span::styled(
             pending_keys_warning(&app.pending_keys),
             Style::default().fg(RED),
-        ));
+        ))
+        .centered();
         frame.render_widget(Paragraph::new(line), area);
         return;
     }
